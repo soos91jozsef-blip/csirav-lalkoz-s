@@ -45,28 +45,23 @@ CURRENCY_INFO = {
 @st.cache_data(ttl=3600)  # Óránként frissít
 def get_exchange_rates():
     """
-    Letölti az aktuális árfolyamokat a frankfurter.app API-ból.
-    Visszaad egy dictionary-t: {'HUF': 1.0, 'EUR': ..., 'RSD': ...}
+    Letölti az aktuális árfolyamokat az open.er-api.com-ról.
+    Visszaadja: {'HUF': 1.0, 'EUR': ..., 'RSD': ...}
     Hiba esetén a fix árfolyamokat használja.
     """
     try:
-        # Az EUR alapú árfolyamokat kérjük le
-        url = "https://api.frankfurter.app/latest?from=EUR&to=HUF,RSD"
+        url = "https://open.er-api.com/v6/latest/EUR"
         response = requests.get(url, timeout=10)
         response.raise_for_status()
         data = response.json()
         rates = data['rates']
         
-        # Az API EUR/HUF és EUR/RSD értékeket ad
         eur_huf = rates['HUF']
         eur_rsd = rates['RSD']
         
-        # Átszámítjuk HUF alapra
-        # 1 HUF = 1 / eur_huf EUR
-        # 1 EUR = eur_huf HUF
-        # 1 RSD = (1 / eur_rsd) EUR = (1 / eur_rsd) * eur_huf HUF
+        # HUF alapú átszámítás
         huf_per_eur = eur_huf
-        huf_per_rsd = eur_huf / eur_rsd
+        huf_per_rsd = eur_huf / eur_rsd  # 1 RSD = (1/eur_rsd) EUR * eur_huf
         
         return {
             'HUF': 1.0,
@@ -74,8 +69,6 @@ def get_exchange_rates():
             'RSD': huf_per_rsd
         }
     except Exception as e:
-        # Ha bármi hiba van, használjuk a fix értékeket
-        # A st.warning csak akkor jelenik meg, ha a session_state engedi
         if 'rates_warning_shown' not in st.session_state:
             st.session_state.rates_warning_shown = False
         if not st.session_state.rates_warning_shown:
@@ -186,7 +179,7 @@ def main():
     income = st.session_state.income
     equipment = st.session_state.equipment
     
-    # Árfolyamok lekérése (a figyelmeztetés itt jelenik meg, ha kell)
+    # Árfolyamok betöltése (a figyelmeztetés itt jelenik meg, ha kell)
     get_exchange_rates()
     
     menu = st.sidebar.selectbox(
