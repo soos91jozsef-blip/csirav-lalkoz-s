@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 import json
 import gspread
+import requests
 from oauth2client.service_account import ServiceAccountCredentials
 
 # ------------------------------
@@ -24,12 +25,39 @@ st.set_page_config(
     layout="wide"
 )
 
-# Árfolyamok
-EXCHANGE_RATES = {
-    'HUF': 1.0,
-    'EUR': 380.0,
-    'RSD': 3.25,
-}
+# ------------------------------
+# Árfolyamok (mostantól online frissülnek)
+# ------------------------------
+@st.cache_data(ttl=86400)  # 24 óráig (86400 másodperc) tárolja az árfolyamokat a gyorsítótárban
+def get_exchange_rates():
+    """Letölti az aktuális árfolyamokat a Frankfurter API-ról (EUR alapon)."""
+    try:
+        url = "https://api.frankfurter.app/latest?from=EUR&to=HUF,RSD"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        rates = data['rates']
+        # Az EUR árfolyama önmagában 1
+        eur_to_huf = rates['HUF']
+        eur_to_rsd = rates['RSD']
+        
+        # A szótárunk HUF alapon számol, ezért átváltjuk
+        # 1 EUR = X HUF  =>  1 HUF = 1 / X EUR
+        # 1 EUR = Y RSD  =>  1 RSD = 1 / Y EUR
+        # 1 HUF = (1/X) * Y RSD
+        return {
+            'HUF': 1.0,
+            'EUR': eur_to_huf,
+            'RSD': eur_to_huf / eur_to_rsd
+        }
+    except Exception as e:
+        # Hiba esetén (pl. nincs net) visszaadja a legutolsó ismert árfolyamokat
+        st.warning(f"⚠️ Nem sikerült frissíteni az árfolyamokat. Az utolsó ismert értékeket használjuk. Hiba: {e}")
+        return {
+            'HUF': 1.0,
+            'EUR': 380.0,
+            'RSD': 3.25,
+        }
 
 # Pénznem szimbólumok és formátumok
 CURRENCY_INFO = {
@@ -115,14 +143,22 @@ def save_full_data(expenses, income, equipment):
     else:
         ws_eq.update([['name', 'purchase_date', 'cost', 'currency', 'status']])
 
-# Átváltás más pénznemre
+# Átváltás más pénznemre (mostantól az aktuális árfolyamokat használja)
 def convert_currency(amount, from_currency, to_currency):
-    amount_huf = amount * EXCHANGE_RATES.get(from_currency, 1.0)
-    return amount_huf / EXCHANGE_RATES.get(to_currency, 1.0)
+    rates = get_exchange_rates()
+    amount_huf = amount * rates.get(from_currency, 1.0)
+    return amount_huf / rates.get(to_currency, 1.0)
 
 # Fő alkalmazás
 def main():
     st.title("🌱 Csíra Vállalkozás Pénzügyi Követő")
+    
+    # Árfolyamok előzetes betöltése és kiírása (informatív jelleggel)
+    rates = get_exchange_rates()
+    with st.sidebar:
+        st.caption(f"💱 Aktuális árfolyamok:")
+        st.caption(f"1 EUR = {rates['EUR']:.2f} Ft")
+        st.caption(f"100 RSD = {rates['RSD']*100:.2f} Ft")
     
     # Session state inicializálása
     if 'expenses' not in st.session_state:
