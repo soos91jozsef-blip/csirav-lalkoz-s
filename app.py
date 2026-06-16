@@ -87,36 +87,49 @@ def load_data():
     return expenses, income, equipment
 
 def save_data(expenses, income, equipment):
-    """Adatok mentése a Google Sheets-be."""
-    client = get_gsheet_client()
-    sheet = client.open(SHEET_NAME)
-    
+    """Adatok mentése a Google Sheets-be (részletes hibaüzenettel)."""
+    try:
+        client = get_gsheet_client()
+        sheet = client.open(SHEET_NAME)
+    except Exception as e:
+        st.error(f"❌ Nem sikerült kapcsolódni a táblázathoz: {e}")
+        return
+
     # Kiadások mentése
-    ws_exp = sheet.worksheet(WORKSHEETS["expenses"])
-    ws_exp.clear()
-    if not expenses.empty:
-        df_to_save = expenses[['date', 'item', 'amount', 'currency', 'category']].copy()
-        ws_exp.update([df_to_save.columns.tolist()] + df_to_save.values.tolist())
-    else:
-        ws_exp.update([['date', 'item', 'amount', 'currency', 'category']])
-    
+    try:
+        ws_exp = sheet.worksheet(WORKSHEETS["expenses"])
+        ws_exp.clear()
+        if not expenses.empty:
+            df_to_save = expenses[['date', 'item', 'amount', 'currency', 'category']].copy()
+            ws_exp.update([df_to_save.columns.tolist()] + df_to_save.values.tolist())
+        else:
+            ws_exp.update([['date', 'item', 'amount', 'currency', 'category']])
+    except Exception as e:
+        st.error(f"❌ Hiba a Kiadások munkalap mentésekor: {e}")
+
     # Bevételek mentése
-    ws_inc = sheet.worksheet(WORKSHEETS["income"])
-    ws_inc.clear()
-    if not income.empty:
-        df_to_save = income[['date', 'description', 'amount', 'currency']].copy()
-        ws_inc.update([df_to_save.columns.tolist()] + df_to_save.values.tolist())
-    else:
-        ws_inc.update([['date', 'description', 'amount', 'currency']])
-    
+    try:
+        ws_inc = sheet.worksheet(WORKSHEETS["income"])
+        ws_inc.clear()
+        if not income.empty:
+            df_to_save = income[['date', 'description', 'amount', 'currency']].copy()
+            ws_inc.update([df_to_save.columns.tolist()] + df_to_save.values.tolist())
+        else:
+            ws_inc.update([['date', 'description', 'amount', 'currency']])
+    except Exception as e:
+        st.error(f"❌ Hiba a Bevételek munkalap mentésekor: {e}")
+
     # Eszközök mentése
-    ws_eq = sheet.worksheet(WORKSHEETS["equipment"])
-    ws_eq.clear()
-    if not equipment.empty:
-        df_to_save = equipment[['name', 'purchase_date', 'cost', 'currency', 'status']].copy()
-        ws_eq.update([df_to_save.columns.tolist()] + df_to_save.values.tolist())
-    else:
-        ws_eq.update([['name', 'purchase_date', 'cost', 'currency', 'status']])
+    try:
+        ws_eq = sheet.worksheet(WORKSHEETS["equipment"])
+        ws_eq.clear()
+        if not equipment.empty:
+            df_to_save = equipment[['name', 'purchase_date', 'cost', 'currency', 'status']].copy()
+            ws_eq.update([df_to_save.columns.tolist()] + df_to_save.values.tolist())
+        else:
+            ws_eq.update([['name', 'purchase_date', 'cost', 'currency', 'status']])
+    except Exception as e:
+        st.error(f"❌ Hiba az Eszközök munkalap mentésekor: {e}")
 
 # Átváltás más pénznemre
 def convert_currency(amount, from_currency, to_currency):
