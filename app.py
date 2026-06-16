@@ -200,9 +200,9 @@ def main():
     if menu == "📊 Áttekintés":
         show_overview(expenses, income, display_currency)
     elif menu == "💰 Kiadások":
-        show_expenses(expenses)
+        show_expenses(expenses, display_currency)
     elif menu == "💵 Bevételek":
-        show_income(income)
+        show_income(income, display_currency)
     elif menu == "🛠️ Eszközök":
         show_equipment(equipment, display_currency)
     elif menu == "📈 Részletes Statisztika":
@@ -242,7 +242,7 @@ def show_overview(expenses, income, display_currency):
         go.Bar(name='Haszon', x=['Pénzügyi összesítő'], y=[profit], marker=dict(color='#2196F3' if profit >= 0 else '#FF9800', line=dict(color='#1565C0' if profit >= 0 else '#E65100', width=2)), text=[f"{profit:,.0f} {symbol}"], textposition='auto')
     ])
     fig.update_layout(title={'text': f'Pénzügyi Összesítő ({CURRENCY_INFO[display_currency]["name"]})', 'font': {'size': 20}}, barmode='group', plot_bgcolor='rgba(240,240,240,0.8)', height=500)
-    st.plotly_chart(fig, width='stretch')
+    st.plotly_chart(fig, width='stretch', config={'scrollZoom': False, 'displayModeBar': False})
     
     col1, col2 = st.columns(2)
     with col1:
@@ -255,15 +255,15 @@ def show_overview(expenses, income, display_currency):
             fig = px.pie(expenses_by_category, values='amount_converted', names='category', color_discrete_sequence=colors)
             fig.update_traces(textposition='inside', textinfo='percent+label', marker=dict(line=dict(color='white', width=2)))
             fig.update_layout(height=400)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, width='stretch', config={'scrollZoom': False, 'displayModeBar': False})
     with col2:
         if not income.empty and not expenses.empty:
             st.subheader("💡 Pénzügyi Mutatók")
             fig = go.Figure(go.Indicator(mode="gauge+number+delta", value=profit_margin, domain={'x': [0,1], 'y': [0,1]}, title={'text': "Haszonkulcs %"}, delta={'reference': 20}, gauge={'axis': {'range': [None, 100]}, 'bar': {'color': "#4CAF50" if profit_margin >= 20 else "#FFA726"}, 'steps': [{'range': [0,10], 'color': "#ffcccc"}, {'range': [10,30], 'color': "#ffffcc"}, {'range': [30,100], 'color': "#ccffcc"}], 'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': 20}}))
             fig.update_layout(height=350)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, width='stretch', config={'scrollZoom': False, 'displayModeBar': False})
 
-def show_expenses(expenses):
+def show_expenses(expenses, display_currency):
     st.header("💰 Kiadások Kezelése")
     
     if st.session_state.edit_expense_index is not None:
@@ -340,10 +340,12 @@ def show_expenses(expenses):
                 st.success("✅ Kiadás törölve!")
                 st.rerun()
         
-        total_huf = sum(convert_currency(row['amount'], row['currency'], 'HUF') for _, row in expenses.iterrows())
-        st.info(f"📤 **Összes kiadás:** {total_huf:,.0f} Ft")
+        # Összes kiadás a választott pénznemben
+        symbol = CURRENCY_INFO[display_currency]['symbol']
+        total_in_display = sum(convert_currency(row['amount'], row['currency'], display_currency) for _, row in expenses.iterrows())
+        st.info(f"📤 **Összes kiadás:** {total_in_display:,.0f} {symbol}")
 
-def show_income(income):
+def show_income(income, display_currency):
     st.header("💵 Bevételek Kezelése")
     
     if st.session_state.edit_income_index is not None:
@@ -413,8 +415,10 @@ def show_income(income):
                 st.success("✅ Bevétel törölve!")
                 st.rerun()
         
-        total_huf = sum(convert_currency(row['amount'], row['currency'], 'HUF') for _, row in income.iterrows())
-        st.info(f"📥 **Összes bevétel:** {total_huf:,.0f} Ft")
+        # Összes bevétel a választott pénznemben
+        symbol = CURRENCY_INFO[display_currency]['symbol']
+        total_in_display = sum(convert_currency(row['amount'], row['currency'], display_currency) for _, row in income.iterrows())
+        st.info(f"📥 **Összes bevétel:** {total_in_display:,.0f} {symbol}")
 
 def show_equipment(equipment, display_currency):
     st.header("🛠️ Eszközök Kezelése")
@@ -527,11 +531,11 @@ def show_detailed_stats(expenses, income, display_currency):
             fig.add_trace(go.Bar(name='Haszon', x=monthly_df['Hónap'], y=monthly_df[f'Haszon ({symbol})'], marker=dict(color=['#339AF0' if x >= 0 else '#FF922B' for x in monthly_df[f'Haszon ({symbol})']], line=dict(color=['#1971C2' if x >= 0 else '#E8590C' for x in monthly_df[f'Haszon ({symbol})']], width=1.5)), text=[f"{x:,.0f} {symbol}" for x in monthly_df[f'Haszon ({symbol})']], textposition='inside'))
             fig.add_trace(go.Scatter(name='Haszonkulcs %', x=monthly_df['Hónap'], y=monthly_df['Haszonkulcs (%)'], mode='lines+markers', yaxis='y2', line=dict(color='#845EF7', width=3), marker=dict(size=10, color='#845EF7', line=dict(color='white', width=2))))
             fig.update_layout(title={'text': f'Havi Pénzügyi Kimutatás ({CURRENCY_INFO[display_currency]["name"]})', 'font': {'size': 20}}, barmode='group', plot_bgcolor='rgba(248,249,250,1)', height=550, xaxis=dict(title='Hónap'), yaxis=dict(title=f'Összeg ({symbol})'), yaxis2=dict(title='Haszonkulcs (%)', overlaying='y', side='right', range=[0,100]), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, width='stretch', config={'scrollZoom': False, 'displayModeBar': False})
             st.subheader("🌊 Havi Haszon Alakulása")
             fig_waterfall = go.Figure(go.Waterfall(name="Haszon", orientation="v", x=monthly_df['Hónap'], y=monthly_df[f'Haszon ({symbol})'], text=[f"{x:,.0f} {symbol}" for x in monthly_df[f'Haszon ({symbol})']], textposition="outside", connector={"line":{"color":"rgb(63,63,63)"}}, decreasing={"marker":{"color":"#FF6B6B"}}, increasing={"marker":{"color":"#51CF66"}}, totals={"marker":{"color":"#339AF0"}}))
             fig_waterfall.update_layout(title=f"Havi Haszon Változása ({symbol})", height=400, plot_bgcolor='rgba(248,249,250,1)')
-            st.plotly_chart(fig_waterfall, width='stretch')
+            st.plotly_chart(fig_waterfall, width='stretch', config={'scrollZoom': False, 'displayModeBar': False})
     else:
         st.info("ℹ️ Nincs még rögzített adat. Adj hozzá kiadásokat és bevételeket a megfelelő menüpontokban!")
 
