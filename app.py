@@ -10,7 +10,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 # ------------------------------
 # Google Sheets beállítások
 # ------------------------------
-SHEET_NAME = "CsíraVállalkozás"  # <-- IDE ÍRD A TÁBLÁZATOD PONTOS NEVÉT!
+SHEET_NAME = "CsíraVállalkozás"
 WORKSHEETS = {
     "expenses": "Kiadasok",
     "income": "Bevetelek",
@@ -44,11 +44,9 @@ CURRENCY_INFO = {
 @st.cache_resource
 def get_gsheet_client():
     """Google Sheets kliens inicializálása a Streamlit Secrets-ből."""
-    # Streamlit Cloud-on a secrets TOML-ben van, helyi gépen credentials.json fájlból olvassuk
     try:
         creds_dict = json.loads(st.secrets["gcp_credentials"])
     except (KeyError, json.JSONDecodeError):
-        # Helyi fejlesztés esetén a credentials.json fájlt használjuk
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
         return gspread.authorize(creds)
@@ -89,7 +87,7 @@ def load_data():
     return expenses, income, equipment
 
 def save_data(expenses, income, equipment):
-    """Adatok mentése a Google Sheets-be (a teljes munkalap felülírásával)."""
+    """Adatok mentése a Google Sheets-be."""
     client = get_gsheet_client()
     sheet = client.open(SHEET_NAME)
     
@@ -97,7 +95,6 @@ def save_data(expenses, income, equipment):
     ws_exp = sheet.worksheet(WORKSHEETS["expenses"])
     ws_exp.clear()
     if not expenses.empty:
-        # Oszlopok sorrendjének biztosítása
         df_to_save = expenses[['date', 'item', 'amount', 'currency', 'category']].copy()
         ws_exp.update([df_to_save.columns.tolist()] + df_to_save.values.tolist())
     else:
@@ -130,7 +127,17 @@ def convert_currency(amount, from_currency, to_currency):
 def main():
     st.title("🌱 Csíra Vállalkozás Pénzügyi Követő")
     
-    expenses, income, equipment = load_data()
+    # Session state inicializálása
+    if 'expenses' not in st.session_state:
+        st.session_state.expenses, st.session_state.income, st.session_state.equipment = load_data()
+        st.session_state.data_changed = False
+    elif st.session_state.get('reload_data', False):
+        st.session_state.expenses, st.session_state.income, st.session_state.equipment = load_data()
+        st.session_state.reload_data = False
+    
+    expenses = st.session_state.expenses
+    income = st.session_state.income
+    equipment = st.session_state.equipment
     
     menu = st.sidebar.selectbox(
         "Menü",
@@ -158,8 +165,18 @@ def main():
     elif menu == "📈 Részletes Statisztika":
         show_detailed_stats(expenses, income, display_currency)
     
-    # Mentés minden módosítás után
-    save_data(expenses, income, equipment)
+    # Mentés csak akkor, ha tényleg változott az adat
+    if st.session_state.data_changed:
+        save_data(expenses, income, equipment)
+        st.session_state.data_changed = False
+        # Az adatok újratöltése, hogy a mentés utáni állapotot tükrözze
+        st.session_state.reload_data = True
+        st.rerun()
+    
+    # Frissítjük a session state-et a helyi módosításokkal
+    st.session_state.expenses = expenses
+    st.session_state.income = income
+    st.session_state.equipment = equipment
 
 def show_overview(expenses, income, display_currency):
     st.header("📊 Pénzügyi Áttekintés")
@@ -195,7 +212,7 @@ def show_overview(expenses, income, display_currency):
         go.Bar(name='Haszon', x=['Pénzügyi összesítő'], y=[profit], marker=dict(color='#2196F3' if profit >= 0 else '#FF9800', line=dict(color='#1565C0' if profit >= 0 else '#E65100', width=2)), text=[f"{profit:,.0f} {symbol}"], textposition='auto')
     ])
     fig.update_layout(title={'text': f'Pénzügyi Összesítő ({CURRENCY_INFO[display_currency]["name"]})', 'font': {'size': 20}}, barmode='group', plot_bgcolor='rgba(240,240,240,0.8)', height=500)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
     
     col1, col2 = st.columns(2)
     with col1:
@@ -208,13 +225,13 @@ def show_overview(expenses, income, display_currency):
             fig = px.pie(expenses_by_category, values='amount_converted', names='category', color_discrete_sequence=colors)
             fig.update_traces(textposition='inside', textinfo='percent+label', marker=dict(line=dict(color='white', width=2)))
             fig.update_layout(height=400)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
     with col2:
         if not income.empty and not expenses.empty:
             st.subheader("💡 Pénzügyi Mutatók")
             fig = go.Figure(go.Indicator(mode="gauge+number+delta", value=profit_margin, domain={'x': [0,1], 'y': [0,1]}, title={'text': "Haszonkulcs %"}, delta={'reference': 20}, gauge={'axis': {'range': [None, 100]}, 'bar': {'color': "#4CAF50" if profit_margin >= 20 else "#FFA726"}, 'steps': [{'range': [0,10], 'color': "#ffcccc"}, {'range': [10,30], 'color': "#ffffcc"}, {'range': [30,100], 'color': "#ccffcc"}], 'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': 20}}))
             fig.update_layout(height=350)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
 def show_expenses(expenses):
     st.header("💰 Kiadások Kezelése")
@@ -225,10 +242,11 @@ def show_expenses(expenses):
         with col3: amount = st.number_input("Összeg", min_value=0.0, step=100.0, format="%.0f")
         with col4: currency = st.selectbox("Pénznem", ['HUF', 'EUR', 'RSD'])
         category = st.selectbox("Kategória", ["Anyagköltség", "Eszközök", "Szállítás", "Csomagolás", "Marketing", "Egyéb"])
-        if st.button("💾 Kiadás Mentése", type="primary", use_container_width=True):
+        if st.button("💾 Kiadás Mentése", type="primary", width='stretch'):
             if item and amount > 0:
                 new_expense = pd.DataFrame({'date': [date.strftime('%Y-%m-%d')], 'item': [item], 'amount': [amount], 'currency': [currency], 'category': [category]})
                 expenses = pd.concat([expenses, new_expense], ignore_index=True)
+                st.session_state.data_changed = True
                 st.success(f"✅ Kiadás mentve: {item} - {amount:,.0f} {CURRENCY_INFO[currency]['symbol']}")
                 st.rerun()
             else:
@@ -241,7 +259,7 @@ def show_expenses(expenses):
         display_expenses['Összeg (Eredeti)'] = display_expenses.apply(lambda row: f"{row['amount']:,.0f} {CURRENCY_INFO[row['currency']]['symbol']}", axis=1)
         display_expenses['Összeg (HUF)'] = display_expenses.apply(lambda row: f"{convert_currency(row['amount'], row['currency'], 'HUF'):,.0f} Ft", axis=1)
         display_expenses['Kategória'] = display_expenses['category']
-        st.dataframe(display_expenses[['Dátum', 'Megnevezés', 'Összeg (Eredeti)', 'Összeg (HUF)', 'Kategória']], use_container_width=True, hide_index=True)
+        st.dataframe(display_expenses[['Dátum', 'Megnevezés', 'Összeg (Eredeti)', 'Összeg (HUF)', 'Kategória']], width='stretch', hide_index=True)
         total_huf = sum(convert_currency(row['amount'], row['currency'], 'HUF') for _, row in expenses.iterrows())
         st.info(f"📤 **Összes kiadás:** {total_huf:,.0f} Ft")
     return expenses
@@ -254,10 +272,11 @@ def show_income(income):
         with col2: description = st.text_input("Megnevezés", placeholder="pl. Brokkoli csíra eladás")
         with col3: amount = st.number_input("Összeg", min_value=0.0, step=100.0, format="%.0f")
         with col4: currency = st.selectbox("Pénznem", ['HUF', 'EUR', 'RSD'], key="income_currency")
-        if st.button("💾 Bevétel Mentése", type="primary", use_container_width=True):
+        if st.button("💾 Bevétel Mentése", type="primary", width='stretch'):
             if description and amount > 0:
                 new_income = pd.DataFrame({'date': [date.strftime('%Y-%m-%d')], 'description': [description], 'amount': [amount], 'currency': [currency]})
                 income = pd.concat([income, new_income], ignore_index=True)
+                st.session_state.data_changed = True
                 st.success(f"✅ Bevétel mentve: {description} - {amount:,.0f} {CURRENCY_INFO[currency]['symbol']}")
                 st.rerun()
             else:
@@ -269,7 +288,7 @@ def show_income(income):
         display_income['Megnevezés'] = display_income['description']
         display_income['Összeg (Eredeti)'] = display_income.apply(lambda row: f"{row['amount']:,.0f} {CURRENCY_INFO[row['currency']]['symbol']}", axis=1)
         display_income['Összeg (HUF)'] = display_income.apply(lambda row: f"{convert_currency(row['amount'], row['currency'], 'HUF'):,.0f} Ft", axis=1)
-        st.dataframe(display_income[['Dátum', 'Megnevezés', 'Összeg (Eredeti)', 'Összeg (HUF)']], use_container_width=True, hide_index=True)
+        st.dataframe(display_income[['Dátum', 'Megnevezés', 'Összeg (Eredeti)', 'Összeg (HUF)']], width='stretch', hide_index=True)
         total_huf = sum(convert_currency(row['amount'], row['currency'], 'HUF') for _, row in income.iterrows())
         st.info(f"📥 **Összes bevétel:** {total_huf:,.0f} Ft")
     return income
@@ -283,10 +302,11 @@ def show_equipment(equipment, display_currency):
         with col3: cost = st.number_input("Költség", min_value=0.0, step=100.0, format="%.0f")
         with col4: currency = st.selectbox("Pénznem", ['HUF', 'EUR', 'RSD'], key="equipment_currency")
         status = st.selectbox("Állapot", ["Aktív", "Javítás alatt", "Selejtezve"])
-        if st.button("💾 Eszköz Mentése", type="primary", use_container_width=True):
+        if st.button("💾 Eszköz Mentése", type="primary", width='stretch'):
             if name and cost > 0:
                 new_equipment = pd.DataFrame({'name': [name], 'purchase_date': [purchase_date.strftime('%Y-%m-%d')], 'cost': [cost], 'currency': [currency], 'status': [status]})
                 equipment = pd.concat([equipment, new_equipment], ignore_index=True)
+                st.session_state.data_changed = True
                 st.success(f"✅ Eszköz mentve: {name} - {cost:,.0f} {CURRENCY_INFO[currency]['symbol']}")
                 st.rerun()
             else:
@@ -299,7 +319,7 @@ def show_equipment(equipment, display_currency):
         display_equipment['Költség (Eredeti)'] = display_equipment.apply(lambda row: f"{row['cost']:,.0f} {CURRENCY_INFO[row['currency']]['symbol']}", axis=1)
         display_equipment['Költség (HUF)'] = display_equipment.apply(lambda row: f"{convert_currency(row['cost'], row['currency'], 'HUF'):,.0f} Ft", axis=1)
         display_equipment['Állapot'] = display_equipment['status']
-        st.dataframe(display_equipment[['Név', 'Beszerzés dátuma', 'Költség (Eredeti)', 'Költség (HUF)', 'Állapot']], use_container_width=True, hide_index=True)
+        st.dataframe(display_equipment[['Név', 'Beszerzés dátuma', 'Költség (Eredeti)', 'Költség (HUF)', 'Állapot']], width='stretch', hide_index=True)
     return equipment
 
 def show_detailed_stats(expenses, income, display_currency):
@@ -331,7 +351,7 @@ def show_detailed_stats(expenses, income, display_currency):
         if monthly_data:
             monthly_df = pd.DataFrame(monthly_data)
             st.subheader("📋 Havi Bontás Táblázat")
-            st.dataframe(monthly_df, use_container_width=True, hide_index=True)
+            st.dataframe(monthly_df, width='stretch', hide_index=True)
             st.subheader("📈 Havi Pénzügyi Trend")
             fig = go.Figure()
             fig.add_trace(go.Bar(name='Kiadás', x=monthly_df['Hónap'], y=monthly_df[f'Kiadás ({symbol})'], marker=dict(color='#FF6B6B', line=dict(color='#FF4444', width=1.5)), text=[f"{x:,.0f} {symbol}" for x in monthly_df[f'Kiadás ({symbol})']], textposition='inside'))
@@ -339,11 +359,11 @@ def show_detailed_stats(expenses, income, display_currency):
             fig.add_trace(go.Bar(name='Haszon', x=monthly_df['Hónap'], y=monthly_df[f'Haszon ({symbol})'], marker=dict(color=['#339AF0' if x >= 0 else '#FF922B' for x in monthly_df[f'Haszon ({symbol})']], line=dict(color=['#1971C2' if x >= 0 else '#E8590C' for x in monthly_df[f'Haszon ({symbol})']], width=1.5)), text=[f"{x:,.0f} {symbol}" for x in monthly_df[f'Haszon ({symbol})']], textposition='inside'))
             fig.add_trace(go.Scatter(name='Haszonkulcs %', x=monthly_df['Hónap'], y=monthly_df['Haszonkulcs (%)'], mode='lines+markers', yaxis='y2', line=dict(color='#845EF7', width=3), marker=dict(size=10, color='#845EF7', line=dict(color='white', width=2))))
             fig.update_layout(title={'text': f'Havi Pénzügyi Kimutatás ({CURRENCY_INFO[display_currency]["name"]})', 'font': {'size': 20}}, barmode='group', plot_bgcolor='rgba(248,249,250,1)', height=550, xaxis=dict(title='Hónap'), yaxis=dict(title=f'Összeg ({symbol})'), yaxis2=dict(title='Haszonkulcs (%)', overlaying='y', side='right', range=[0,100]), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
             st.subheader("🌊 Havi Haszon Alakulása")
             fig_waterfall = go.Figure(go.Waterfall(name="Haszon", orientation="v", x=monthly_df['Hónap'], y=monthly_df[f'Haszon ({symbol})'], text=[f"{x:,.0f} {symbol}" for x in monthly_df[f'Haszon ({symbol})']], textposition="outside", connector={"line":{"color":"rgb(63,63,63)"}}, decreasing={"marker":{"color":"#FF6B6B"}}, increasing={"marker":{"color":"#51CF66"}}, totals={"marker":{"color":"#339AF0"}}))
             fig_waterfall.update_layout(title=f"Havi Haszon Változása ({symbol})", height=400, plot_bgcolor='rgba(248,249,250,1)')
-            st.plotly_chart(fig_waterfall, use_container_width=True)
+            st.plotly_chart(fig_waterfall, width='stretch')
     else:
         st.info("ℹ️ Nincs még rögzített adat. Adj hozzá kiadásokat és bevételeket a megfelelő menüpontokban!")
 
