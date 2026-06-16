@@ -25,7 +25,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# Alapértelmezett fix árfolyamok (tartalék, ha az API nem működik)
+# Alapértelmezett fix árfolyamok (tartalék)
 FALLBACK_RATES = {
     'HUF': 1.0,
     'EUR': 380.0,
@@ -42,12 +42,11 @@ CURRENCY_INFO = {
 # ------------------------------
 # Árfolyam frissítése API-ból
 # ------------------------------
-@st.cache_data(ttl=3600)  # Óránként frissít
+@st.cache_data(ttl=3600)
 def get_exchange_rates():
     """
     Letölti az aktuális árfolyamokat az open.er-api.com-ról.
     Visszaadja: {'HUF': 1.0, 'EUR': ..., 'RSD': ...}
-    Hiba esetén a fix árfolyamokat használja.
     """
     try:
         url = "https://open.er-api.com/v6/latest/EUR"
@@ -59,9 +58,8 @@ def get_exchange_rates():
         eur_huf = rates['HUF']
         eur_rsd = rates['RSD']
         
-        # HUF alapú átszámítás
         huf_per_eur = eur_huf
-        huf_per_rsd = eur_huf / eur_rsd  # 1 RSD = (1/eur_rsd) EUR * eur_huf
+        huf_per_rsd = eur_huf / eur_rsd
         
         return {
             'HUF': 1.0,
@@ -98,7 +96,6 @@ def load_data():
     client = get_gsheet_client()
     sheet = client.open(SHEET_NAME)
     
-    # Kiadások
     try:
         ws_exp = sheet.worksheet(WORKSHEETS["expenses"])
         data_exp = ws_exp.get_all_records()
@@ -106,7 +103,6 @@ def load_data():
     except:
         expenses = pd.DataFrame(columns=['date', 'item', 'amount', 'currency', 'category'])
     
-    # Bevételek
     try:
         ws_inc = sheet.worksheet(WORKSHEETS["income"])
         data_inc = ws_inc.get_all_records()
@@ -114,7 +110,6 @@ def load_data():
     except:
         income = pd.DataFrame(columns=['date', 'description', 'amount', 'currency'])
     
-    # Eszközök
     try:
         ws_eq = sheet.worksheet(WORKSHEETS["equipment"])
         data_eq = ws_eq.get_all_records()
@@ -129,7 +124,6 @@ def save_full_data(expenses, income, equipment):
     client = get_gsheet_client()
     sheet = client.open(SHEET_NAME)
     
-    # Kiadások
     ws_exp = sheet.worksheet(WORKSHEETS["expenses"])
     ws_exp.clear()
     if not expenses.empty:
@@ -137,7 +131,6 @@ def save_full_data(expenses, income, equipment):
     else:
         ws_exp.update([['date', 'item', 'amount', 'currency', 'category']])
     
-    # Bevételek
     ws_inc = sheet.worksheet(WORKSHEETS["income"])
     ws_inc.clear()
     if not income.empty:
@@ -145,7 +138,6 @@ def save_full_data(expenses, income, equipment):
     else:
         ws_inc.update([['date', 'description', 'amount', 'currency']])
     
-    # Eszközök
     ws_eq = sheet.worksheet(WORKSHEETS["equipment"])
     ws_eq.clear()
     if not equipment.empty:
@@ -153,7 +145,6 @@ def save_full_data(expenses, income, equipment):
     else:
         ws_eq.update([['name', 'purchase_date', 'cost', 'currency', 'status']])
 
-# Átváltás más pénznemre (az aktuális árfolyamokkal)
 def convert_currency(amount, from_currency, to_currency):
     rates = get_exchange_rates()
     amount_huf = amount * rates.get(from_currency, 1.0)
@@ -163,7 +154,6 @@ def convert_currency(amount, from_currency, to_currency):
 def main():
     st.title("🌱 Csíra Vállalkozás Pénzügyi Követő")
     
-    # Session state inicializálása
     if 'expenses' not in st.session_state:
         st.session_state.expenses, st.session_state.income, st.session_state.equipment = load_data()
     if 'edit_expense_index' not in st.session_state:
@@ -179,7 +169,6 @@ def main():
     income = st.session_state.income
     equipment = st.session_state.equipment
     
-    # Árfolyamok betöltése (a figyelmeztetés itt jelenik meg, ha kell)
     get_exchange_rates()
     
     menu = st.sidebar.selectbox(
@@ -187,15 +176,13 @@ def main():
         ["📊 Áttekintés", "💰 Kiadások", "💵 Bevételek", "🛠️ Eszközök", "📈 Részletes Statisztika"]
     )
     
-    if menu in ["📊 Áttekintés", "📈 Részletes Statisztika"]:
-        st.sidebar.markdown("---")
-        display_currency = st.sidebar.selectbox(
-            "📌 Statisztika pénzneme:",
-            ['HUF', 'EUR', 'RSD'],
-            help="Válaszd ki, milyen pénznemben szeretnéd látni a statisztikákat"
-        )
-    else:
-        display_currency = 'HUF'
+    # Pénznem kiválasztása - minden menüpontra érvényes
+    st.sidebar.markdown("---")
+    display_currency = st.sidebar.selectbox(
+        "📌 Pénznem a végösszegekhez:",
+        ['HUF', 'EUR', 'RSD'],
+        help="Válaszd ki, milyen pénznemben szeretnéd látni a végösszegeket"
+    )
     
     if menu == "📊 Áttekintés":
         show_overview(expenses, income, display_currency)
@@ -265,6 +252,7 @@ def show_overview(expenses, income, display_currency):
 
 def show_expenses(expenses, display_currency):
     st.header("💰 Kiadások Kezelése")
+    symbol = CURRENCY_INFO[display_currency]['symbol']
     
     if st.session_state.edit_expense_index is not None:
         idx = st.session_state.edit_expense_index
@@ -340,13 +328,13 @@ def show_expenses(expenses, display_currency):
                 st.success("✅ Kiadás törölve!")
                 st.rerun()
         
-        # Összes kiadás a választott pénznemben
-        symbol = CURRENCY_INFO[display_currency]['symbol']
-        total_in_display = sum(convert_currency(row['amount'], row['currency'], display_currency) for _, row in expenses.iterrows())
-        st.info(f"📤 **Összes kiadás:** {total_in_display:,.0f} {symbol}")
+        # Végösszeg a kiválasztott pénznemben
+        total_in_selected = sum(convert_currency(row['amount'], row['currency'], display_currency) for _, row in expenses.iterrows())
+        st.info(f"📤 **Összes kiadás:** {total_in_selected:,.0f} {symbol}")
 
 def show_income(income, display_currency):
     st.header("💵 Bevételek Kezelése")
+    symbol = CURRENCY_INFO[display_currency]['symbol']
     
     if st.session_state.edit_income_index is not None:
         idx = st.session_state.edit_income_index
@@ -415,13 +403,13 @@ def show_income(income, display_currency):
                 st.success("✅ Bevétel törölve!")
                 st.rerun()
         
-        # Összes bevétel a választott pénznemben
-        symbol = CURRENCY_INFO[display_currency]['symbol']
-        total_in_display = sum(convert_currency(row['amount'], row['currency'], display_currency) for _, row in income.iterrows())
-        st.info(f"📥 **Összes bevétel:** {total_in_display:,.0f} {symbol}")
+        # Végösszeg a kiválasztott pénznemben
+        total_in_selected = sum(convert_currency(row['amount'], row['currency'], display_currency) for _, row in income.iterrows())
+        st.info(f"📥 **Összes bevétel:** {total_in_selected:,.0f} {symbol}")
 
 def show_equipment(equipment, display_currency):
     st.header("🛠️ Eszközök Kezelése")
+    symbol = CURRENCY_INFO[display_currency]['symbol']
     
     if st.session_state.edit_equipment_index is not None:
         idx = st.session_state.edit_equipment_index
