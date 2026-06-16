@@ -86,38 +86,34 @@ def load_data():
     
     return expenses, income, equipment
 
-def save_expense_to_sheet(date_str, item, amount, currency, category):
-    """Egyetlen kiadás hozzáfűzése a Google Sheets munkalaphoz."""
-    try:
-        client = get_gsheet_client()
-        sheet = client.open(SHEET_NAME)
-        ws = sheet.worksheet(WORKSHEETS["expenses"])
-        ws.append_row([date_str, item, amount, currency, category])
-        return True, None
-    except Exception as e:
-        return False, str(e)
-
-def save_income_to_sheet(date_str, description, amount, currency):
-    """Egyetlen bevétel hozzáfűzése a Google Sheets munkalaphoz."""
-    try:
-        client = get_gsheet_client()
-        sheet = client.open(SHEET_NAME)
-        ws = sheet.worksheet(WORKSHEETS["income"])
-        ws.append_row([date_str, description, amount, currency])
-        return True, None
-    except Exception as e:
-        return False, str(e)
-
-def save_equipment_to_sheet(name, purchase_date_str, cost, currency, status):
-    """Egyetlen eszköz hozzáfűzése a Google Sheets munkalaphoz."""
-    try:
-        client = get_gsheet_client()
-        sheet = client.open(SHEET_NAME)
-        ws = sheet.worksheet(WORKSHEETS["equipment"])
-        ws.append_row([name, purchase_date_str, cost, currency, status])
-        return True, None
-    except Exception as e:
-        return False, str(e)
+def save_full_data(expenses, income, equipment):
+    """Teljes adatok mentése a Google Sheets-be (felülírás)."""
+    client = get_gsheet_client()
+    sheet = client.open(SHEET_NAME)
+    
+    # Kiadások
+    ws_exp = sheet.worksheet(WORKSHEETS["expenses"])
+    ws_exp.clear()
+    if not expenses.empty:
+        ws_exp.update([expenses.columns.tolist()] + expenses.values.tolist())
+    else:
+        ws_exp.update([['date', 'item', 'amount', 'currency', 'category']])
+    
+    # Bevételek
+    ws_inc = sheet.worksheet(WORKSHEETS["income"])
+    ws_inc.clear()
+    if not income.empty:
+        ws_inc.update([income.columns.tolist()] + income.values.tolist())
+    else:
+        ws_inc.update([['date', 'description', 'amount', 'currency']])
+    
+    # Eszközök
+    ws_eq = sheet.worksheet(WORKSHEETS["equipment"])
+    ws_eq.clear()
+    if not equipment.empty:
+        ws_eq.update([equipment.columns.tolist()] + equipment.values.tolist())
+    else:
+        ws_eq.update([['name', 'purchase_date', 'cost', 'currency', 'status']])
 
 # Átváltás más pénznemre
 def convert_currency(amount, from_currency, to_currency):
@@ -128,8 +124,19 @@ def convert_currency(amount, from_currency, to_currency):
 def main():
     st.title("🌱 Csíra Vállalkozás Pénzügyi Követő")
     
-    # Adatok betöltése (most már minden újratöltésnél friss adatokat kapunk)
-    expenses, income, equipment = load_data()
+    # Session state inicializálása
+    if 'expenses' not in st.session_state:
+        st.session_state.expenses, st.session_state.income, st.session_state.equipment = load_data()
+    if 'edit_expense_index' not in st.session_state:
+        st.session_state.edit_expense_index = None
+    if 'edit_income_index' not in st.session_state:
+        st.session_state.edit_income_index = None
+    if 'edit_equipment_index' not in st.session_state:
+        st.session_state.edit_equipment_index = None
+    
+    expenses = st.session_state.expenses
+    income = st.session_state.income
+    equipment = st.session_state.equipment
     
     menu = st.sidebar.selectbox(
         "Menü",
@@ -214,92 +221,240 @@ def show_overview(expenses, income, display_currency):
 
 def show_expenses(expenses):
     st.header("💰 Kiadások Kezelése")
-    with st.expander("➕ Új Kiadás Hozzáadása", expanded=True):
+    
+    # Szerkesztési állapot kezelése
+    if st.session_state.edit_expense_index is not None:
+        idx = st.session_state.edit_expense_index
+        if idx < len(expenses):
+            row = expenses.iloc[idx]
+            st.subheader("✏️ Kiadás szerkesztése")
+            with st.form("edit_expense_form"):
+                col1, col2, col3, col4 = st.columns([2,2,2,2])
+                with col1:
+                    date = st.date_input("Dátum", pd.to_datetime(row['date']))
+                with col2:
+                    item = st.text_input("Megnevezés", value=row['item'])
+                with col3:
+                    amount = st.number_input("Összeg", value=float(row['amount']), min_value=0.0, step=100.0, format="%.0f")
+                with col4:
+                    currency = st.selectbox("Pénznem", ['HUF', 'EUR', 'RSD'], index=['HUF','EUR','RSD'].index(row['currency']))
+                category = st.selectbox("Kategória", 
+                    ["Anyagköltség", "Eszközök", "Szállítás", "Csomagolás", "Marketing", "Egyéb"],
+                    index=["Anyagköltség", "Eszközök", "Szállítás", "Csomagolás", "Marketing", "Egyéb"].index(row['category']))
+                col_btn1, col_btn2 = st.columns(2)
+                with col_btn1:
+                    if st.form_submit_button("💾 Módosítás mentése", use_container_width=True):
+                        # Adatok frissítése
+                        expenses.at[idx, 'date'] = date.strftime('%Y-%m-%d')
+                        expenses.at[idx, 'item'] = item
+                        expenses.at[idx, 'amount'] = amount
+                        expenses.at[idx, 'currency'] = currency
+                        expenses.at[idx, 'category'] = category
+                        st.session_state.expenses = expenses
+                        save_full_data(expenses, st.session_state.income, st.session_state.equipment)
+                        st.session_state.edit_expense_index = None
+                        st.success("✅ Kiadás módosítva!")
+                        st.rerun()
+                with col_btn2:
+                    if st.form_submit_button("❌ Mégsem", use_container_width=True):
+                        st.session_state.edit_expense_index = None
+                        st.rerun()
+    
+    # Új kiadás hozzáadása
+    with st.expander("➕ Új Kiadás Hozzáadása", expanded=(st.session_state.edit_expense_index is None)):
         col1, col2, col3, col4 = st.columns([2,2,2,2])
-        with col1: date = st.date_input("Dátum", datetime.now())
-        with col2: item = st.text_input("Megnevezés", placeholder="pl. Csíra magvak")
-        with col3: amount = st.number_input("Összeg", min_value=0.0, step=100.0, format="%.0f")
-        with col4: currency = st.selectbox("Pénznem", ['HUF', 'EUR', 'RSD'])
-        category = st.selectbox("Kategória", ["Anyagköltség", "Eszközök", "Szállítás", "Csomagolás", "Marketing", "Egyéb"])
-        if st.button("💾 Kiadás Mentése", type="primary", width='stretch'):
-            if item and amount > 0:
-                success, error_msg = save_expense_to_sheet(date.strftime('%Y-%m-%d'), item, amount, currency, category)
-                if success:
-                    st.success(f"✅ Kiadás mentve: {item} - {amount:,.0f} {CURRENCY_INFO[currency]['symbol']}")
-                    st.rerun()
-                else:
-                    st.error(f"❌ Hiba a mentés során: {error_msg}")
+        with col1: date_new = st.date_input("Dátum", datetime.now(), key="new_exp_date")
+        with col2: item_new = st.text_input("Megnevezés", placeholder="pl. Csíra magvak", key="new_exp_item")
+        with col3: amount_new = st.number_input("Összeg", min_value=0.0, step=100.0, format="%.0f", key="new_exp_amount")
+        with col4: currency_new = st.selectbox("Pénznem", ['HUF', 'EUR', 'RSD'], key="new_exp_currency")
+        category_new = st.selectbox("Kategória", 
+            ["Anyagköltség", "Eszközök", "Szállítás", "Csomagolás", "Marketing", "Egyéb"], key="new_exp_category")
+        if st.button("💾 Kiadás Mentése", type="primary", use_container_width=True, key="save_new_expense"):
+            if item_new and amount_new > 0:
+                new_row = pd.DataFrame({'date': [date_new.strftime('%Y-%m-%d')], 'item': [item_new], 'amount': [amount_new], 'currency': [currency_new], 'category': [category_new]})
+                expenses = pd.concat([expenses, new_row], ignore_index=True)
+                st.session_state.expenses = expenses
+                save_full_data(expenses, st.session_state.income, st.session_state.equipment)
+                st.success(f"✅ Kiadás mentve: {item_new} - {amount_new:,.0f} {CURRENCY_INFO[currency_new]['symbol']}")
+                st.rerun()
             else:
                 st.error("❌ Kérlek tölts ki minden mezőt!")
+    
+    # Meglévő kiadások listája
     if not expenses.empty:
         st.subheader("📋 Kiadások Listája")
-        display_expenses = expenses.copy()
-        display_expenses['Dátum'] = display_expenses['date']
-        display_expenses['Megnevezés'] = display_expenses['item']
-        display_expenses['Összeg (Eredeti)'] = display_expenses.apply(lambda row: f"{row['amount']:,.0f} {CURRENCY_INFO[row['currency']]['symbol']}", axis=1)
-        display_expenses['Összeg (HUF)'] = display_expenses.apply(lambda row: f"{convert_currency(row['amount'], row['currency'], 'HUF'):,.0f} Ft", axis=1)
-        display_expenses['Kategória'] = display_expenses['category']
-        st.dataframe(display_expenses[['Dátum', 'Megnevezés', 'Összeg (Eredeti)', 'Összeg (HUF)', 'Kategória']], width='stretch', hide_index=True)
+        for i, (idx, row) in enumerate(expenses.iterrows()):
+            cols = st.columns([1.5, 2.5, 1.5, 1.5, 1.5, 1.5, 1.5])
+            cols[0].write(row['date'])
+            cols[1].write(row['item'])
+            cols[2].write(f"{row['amount']:,.0f} {CURRENCY_INFO[row['currency']]['symbol']}")
+            cols[3].write(f"{convert_currency(row['amount'], row['currency'], 'HUF'):,.0f} Ft")
+            cols[4].write(row['category'])
+            if cols[5].button("✏️", key=f"edit_exp_{i}"):
+                st.session_state.edit_expense_index = i
+                st.rerun()
+            if cols[6].button("🗑️", key=f"del_exp_{i}"):
+                expenses = expenses.drop(idx).reset_index(drop=True)
+                st.session_state.expenses = expenses
+                save_full_data(expenses, st.session_state.income, st.session_state.equipment)
+                st.success("✅ Kiadás törölve!")
+                st.rerun()
+        
         total_huf = sum(convert_currency(row['amount'], row['currency'], 'HUF') for _, row in expenses.iterrows())
         st.info(f"📤 **Összes kiadás:** {total_huf:,.0f} Ft")
 
 def show_income(income):
     st.header("💵 Bevételek Kezelése")
-    with st.expander("➕ Új Bevétel Hozzáadása", expanded=True):
+    
+    # Szerkesztési állapot
+    if st.session_state.edit_income_index is not None:
+        idx = st.session_state.edit_income_index
+        if idx < len(income):
+            row = income.iloc[idx]
+            st.subheader("✏️ Bevétel szerkesztése")
+            with st.form("edit_income_form"):
+                col1, col2, col3, col4 = st.columns([2,2,2,2])
+                with col1:
+                    date = st.date_input("Dátum", pd.to_datetime(row['date']))
+                with col2:
+                    desc = st.text_input("Megnevezés", value=row['description'])
+                with col3:
+                    amount = st.number_input("Összeg", value=float(row['amount']), min_value=0.0, step=100.0, format="%.0f")
+                with col4:
+                    currency = st.selectbox("Pénznem", ['HUF', 'EUR', 'RSD'], index=['HUF','EUR','RSD'].index(row['currency']))
+                col_btn1, col_btn2 = st.columns(2)
+                with col_btn1:
+                    if st.form_submit_button("💾 Módosítás mentése", use_container_width=True):
+                        income.at[idx, 'date'] = date.strftime('%Y-%m-%d')
+                        income.at[idx, 'description'] = desc
+                        income.at[idx, 'amount'] = amount
+                        income.at[idx, 'currency'] = currency
+                        st.session_state.income = income
+                        save_full_data(st.session_state.expenses, income, st.session_state.equipment)
+                        st.session_state.edit_income_index = None
+                        st.success("✅ Bevétel módosítva!")
+                        st.rerun()
+                with col_btn2:
+                    if st.form_submit_button("❌ Mégsem", use_container_width=True):
+                        st.session_state.edit_income_index = None
+                        st.rerun()
+    
+    # Új bevétel
+    with st.expander("➕ Új Bevétel Hozzáadása", expanded=(st.session_state.edit_income_index is None)):
         col1, col2, col3, col4 = st.columns([2,2,2,2])
-        with col1: date = st.date_input("Dátum", datetime.now())
-        with col2: description = st.text_input("Megnevezés", placeholder="pl. Brokkoli csíra eladás")
-        with col3: amount = st.number_input("Összeg", min_value=0.0, step=100.0, format="%.0f")
-        with col4: currency = st.selectbox("Pénznem", ['HUF', 'EUR', 'RSD'], key="income_currency")
-        if st.button("💾 Bevétel Mentése", type="primary", width='stretch'):
-            if description and amount > 0:
-                success, error_msg = save_income_to_sheet(date.strftime('%Y-%m-%d'), description, amount, currency)
-                if success:
-                    st.success(f"✅ Bevétel mentve: {description} - {amount:,.0f} {CURRENCY_INFO[currency]['symbol']}")
-                    st.rerun()
-                else:
-                    st.error(f"❌ Hiba a mentés során: {error_msg}")
+        with col1: date_new = st.date_input("Dátum", datetime.now(), key="new_inc_date")
+        with col2: desc_new = st.text_input("Megnevezés", placeholder="pl. Brokkoli csíra eladás", key="new_inc_desc")
+        with col3: amount_new = st.number_input("Összeg", min_value=0.0, step=100.0, format="%.0f", key="new_inc_amount")
+        with col4: currency_new = st.selectbox("Pénznem", ['HUF', 'EUR', 'RSD'], key="new_inc_currency")
+        if st.button("💾 Bevétel Mentése", type="primary", use_container_width=True, key="save_new_income"):
+            if desc_new and amount_new > 0:
+                new_row = pd.DataFrame({'date': [date_new.strftime('%Y-%m-%d')], 'description': [desc_new], 'amount': [amount_new], 'currency': [currency_new]})
+                income = pd.concat([income, new_row], ignore_index=True)
+                st.session_state.income = income
+                save_full_data(st.session_state.expenses, income, st.session_state.equipment)
+                st.success(f"✅ Bevétel mentve: {desc_new} - {amount_new:,.0f} {CURRENCY_INFO[currency_new]['symbol']}")
+                st.rerun()
             else:
                 st.error("❌ Kérlek tölts ki minden mezőt!")
+    
+    # Lista
     if not income.empty:
         st.subheader("📋 Bevételek Listája")
-        display_income = income.copy()
-        display_income['Dátum'] = display_income['date']
-        display_income['Megnevezés'] = display_income['description']
-        display_income['Összeg (Eredeti)'] = display_income.apply(lambda row: f"{row['amount']:,.0f} {CURRENCY_INFO[row['currency']]['symbol']}", axis=1)
-        display_income['Összeg (HUF)'] = display_income.apply(lambda row: f"{convert_currency(row['amount'], row['currency'], 'HUF'):,.0f} Ft", axis=1)
-        st.dataframe(display_income[['Dátum', 'Megnevezés', 'Összeg (Eredeti)', 'Összeg (HUF)']], width='stretch', hide_index=True)
+        for i, (idx, row) in enumerate(income.iterrows()):
+            cols = st.columns([1.5, 2.5, 1.5, 1.5, 1.5, 1.5])
+            cols[0].write(row['date'])
+            cols[1].write(row['description'])
+            cols[2].write(f"{row['amount']:,.0f} {CURRENCY_INFO[row['currency']]['symbol']}")
+            cols[3].write(f"{convert_currency(row['amount'], row['currency'], 'HUF'):,.0f} Ft")
+            if cols[4].button("✏️", key=f"edit_inc_{i}"):
+                st.session_state.edit_income_index = i
+                st.rerun()
+            if cols[5].button("🗑️", key=f"del_inc_{i}"):
+                income = income.drop(idx).reset_index(drop=True)
+                st.session_state.income = income
+                save_full_data(st.session_state.expenses, income, st.session_state.equipment)
+                st.success("✅ Bevétel törölve!")
+                st.rerun()
+        
         total_huf = sum(convert_currency(row['amount'], row['currency'], 'HUF') for _, row in income.iterrows())
         st.info(f"📥 **Összes bevétel:** {total_huf:,.0f} Ft")
 
 def show_equipment(equipment, display_currency):
     st.header("🛠️ Eszközök Kezelése")
-    with st.expander("➕ Új Eszköz Hozzáadása", expanded=True):
+    
+    # Szerkesztés
+    if st.session_state.edit_equipment_index is not None:
+        idx = st.session_state.edit_equipment_index
+        if idx < len(equipment):
+            row = equipment.iloc[idx]
+            st.subheader("✏️ Eszköz szerkesztése")
+            with st.form("edit_equipment_form"):
+                col1, col2, col3, col4 = st.columns([2,2,2,2])
+                with col1:
+                    name = st.text_input("Eszköz neve", value=row['name'])
+                with col2:
+                    purch_date = st.date_input("Beszerzés dátuma", pd.to_datetime(row['purchase_date']))
+                with col3:
+                    cost = st.number_input("Költség", value=float(row['cost']), min_value=0.0, step=100.0, format="%.0f")
+                with col4:
+                    currency = st.selectbox("Pénznem", ['HUF', 'EUR', 'RSD'], index=['HUF','EUR','RSD'].index(row['currency']))
+                status = st.selectbox("Állapot", ["Aktív", "Javítás alatt", "Selejtezve"], index=["Aktív", "Javítás alatt", "Selejtezve"].index(row['status']))
+                col_btn1, col_btn2 = st.columns(2)
+                with col_btn1:
+                    if st.form_submit_button("💾 Módosítás mentése", use_container_width=True):
+                        equipment.at[idx, 'name'] = name
+                        equipment.at[idx, 'purchase_date'] = purch_date.strftime('%Y-%m-%d')
+                        equipment.at[idx, 'cost'] = cost
+                        equipment.at[idx, 'currency'] = currency
+                        equipment.at[idx, 'status'] = status
+                        st.session_state.equipment = equipment
+                        save_full_data(st.session_state.expenses, st.session_state.income, equipment)
+                        st.session_state.edit_equipment_index = None
+                        st.success("✅ Eszköz módosítva!")
+                        st.rerun()
+                with col_btn2:
+                    if st.form_submit_button("❌ Mégsem", use_container_width=True):
+                        st.session_state.edit_equipment_index = None
+                        st.rerun()
+    
+    # Új eszköz
+    with st.expander("➕ Új Eszköz Hozzáadása", expanded=(st.session_state.edit_equipment_index is None)):
         col1, col2, col3, col4 = st.columns([2,2,2,2])
-        with col1: name = st.text_input("Eszköz neve", placeholder="pl. Csíráztató tálca")
-        with col2: purchase_date = st.date_input("Beszerzés dátuma", datetime.now())
-        with col3: cost = st.number_input("Költség", min_value=0.0, step=100.0, format="%.0f")
-        with col4: currency = st.selectbox("Pénznem", ['HUF', 'EUR', 'RSD'], key="equipment_currency")
-        status = st.selectbox("Állapot", ["Aktív", "Javítás alatt", "Selejtezve"])
-        if st.button("💾 Eszköz Mentése", type="primary", width='stretch'):
-            if name and cost > 0:
-                success, error_msg = save_equipment_to_sheet(name, purchase_date.strftime('%Y-%m-%d'), cost, currency, status)
-                if success:
-                    st.success(f"✅ Eszköz mentve: {name} - {cost:,.0f} {CURRENCY_INFO[currency]['symbol']}")
-                    st.rerun()
-                else:
-                    st.error(f"❌ Hiba a mentés során: {error_msg}")
+        with col1: name_new = st.text_input("Eszköz neve", placeholder="pl. Csíráztató tálca", key="new_eq_name")
+        with col2: purch_date_new = st.date_input("Beszerzés dátuma", datetime.now(), key="new_eq_date")
+        with col3: cost_new = st.number_input("Költség", min_value=0.0, step=100.0, format="%.0f", key="new_eq_cost")
+        with col4: currency_new = st.selectbox("Pénznem", ['HUF', 'EUR', 'RSD'], key="new_eq_currency")
+        status_new = st.selectbox("Állapot", ["Aktív", "Javítás alatt", "Selejtezve"], key="new_eq_status")
+        if st.button("💾 Eszköz Mentése", type="primary", use_container_width=True, key="save_new_equipment"):
+            if name_new and cost_new > 0:
+                new_row = pd.DataFrame({'name': [name_new], 'purchase_date': [purch_date_new.strftime('%Y-%m-%d')], 'cost': [cost_new], 'currency': [currency_new], 'status': [status_new]})
+                equipment = pd.concat([equipment, new_row], ignore_index=True)
+                st.session_state.equipment = equipment
+                save_full_data(st.session_state.expenses, st.session_state.income, equipment)
+                st.success(f"✅ Eszköz mentve: {name_new} - {cost_new:,.0f} {CURRENCY_INFO[currency_new]['symbol']}")
+                st.rerun()
             else:
                 st.error("❌ Kérlek tölts ki minden mezőt!")
+    
+    # Lista
     if not equipment.empty:
         st.subheader("📋 Eszközök Listája")
-        display_equipment = equipment.copy()
-        display_equipment['Név'] = display_equipment['name']
-        display_equipment['Beszerzés dátuma'] = display_equipment['purchase_date']
-        display_equipment['Költség (Eredeti)'] = display_equipment.apply(lambda row: f"{row['cost']:,.0f} {CURRENCY_INFO[row['currency']]['symbol']}", axis=1)
-        display_equipment['Költség (HUF)'] = display_equipment.apply(lambda row: f"{convert_currency(row['cost'], row['currency'], 'HUF'):,.0f} Ft", axis=1)
-        display_equipment['Állapot'] = display_equipment['status']
-        st.dataframe(display_equipment[['Név', 'Beszerzés dátuma', 'Költség (Eredeti)', 'Költség (HUF)', 'Állapot']], width='stretch', hide_index=True)
+        for i, (idx, row) in enumerate(equipment.iterrows()):
+            cols = st.columns([2, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5])
+            cols[0].write(row['name'])
+            cols[1].write(row['purchase_date'])
+            cols[2].write(f"{row['cost']:,.0f} {CURRENCY_INFO[row['currency']]['symbol']}")
+            cols[3].write(f"{convert_currency(row['cost'], row['currency'], 'HUF'):,.0f} Ft")
+            cols[4].write(row['status'])
+            if cols[5].button("✏️", key=f"edit_eq_{i}"):
+                st.session_state.edit_equipment_index = i
+                st.rerun()
+            if cols[6].button("🗑️", key=f"del_eq_{i}"):
+                equipment = equipment.drop(idx).reset_index(drop=True)
+                st.session_state.equipment = equipment
+                save_full_data(st.session_state.expenses, st.session_state.income, equipment)
+                st.success("✅ Eszköz törölve!")
+                st.rerun()
 
 def show_detailed_stats(expenses, income, display_currency):
     st.header("📈 Részletes Statisztika")
