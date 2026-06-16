@@ -5,8 +5,8 @@ import plotly.graph_objects as go
 from datetime import datetime
 import json
 import gspread
-import requests
 from oauth2client.service_account import ServiceAccountCredentials
+import requests
 
 # ------------------------------
 # Google Sheets beállítások
@@ -25,39 +25,12 @@ st.set_page_config(
     layout="wide"
 )
 
-# ------------------------------
-# Árfolyamok (mostantól online frissülnek)
-# ------------------------------
-@st.cache_data(ttl=86400)  # 24 óráig (86400 másodperc) tárolja az árfolyamokat a gyorsítótárban
-def get_exchange_rates():
-    """Letölti az aktuális árfolyamokat a Frankfurter API-ról (EUR alapon)."""
-    try:
-        url = "https://api.frankfurter.app/latest?from=EUR&to=HUF,RSD"
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        rates = data['rates']
-        # Az EUR árfolyama önmagában 1
-        eur_to_huf = rates['HUF']
-        eur_to_rsd = rates['RSD']
-        
-        # A szótárunk HUF alapon számol, ezért átváltjuk
-        # 1 EUR = X HUF  =>  1 HUF = 1 / X EUR
-        # 1 EUR = Y RSD  =>  1 RSD = 1 / Y EUR
-        # 1 HUF = (1/X) * Y RSD
-        return {
-            'HUF': 1.0,
-            'EUR': eur_to_huf,
-            'RSD': eur_to_huf / eur_to_rsd
-        }
-    except Exception as e:
-        # Hiba esetén (pl. nincs net) visszaadja a legutolsó ismert árfolyamokat
-        st.warning(f"⚠️ Nem sikerült frissíteni az árfolyamokat. Az utolsó ismert értékeket használjuk. Hiba: {e}")
-        return {
-            'HUF': 1.0,
-            'EUR': 380.0,
-            'RSD': 3.25,
-        }
+# Alapértelmezett fix árfolyamok (tartalék, ha az API nem működik)
+FALLBACK_RATES = {
+    'HUF': 1.0,
+    'EUR': 380.0,
+    'RSD': 3.25,
+}
 
 # Pénznem szimbólumok és formátumok
 CURRENCY_INFO = {
@@ -65,6 +38,50 @@ CURRENCY_INFO = {
     'EUR': {'symbol': '€', 'name': 'Euró'},
     'RSD': {'symbol': 'din', 'name': 'Szerb Dinár'},
 }
+
+# ------------------------------
+# Árfolyam frissítése API-ból
+# ------------------------------
+@st.cache_data(ttl=3600)  # Óránként frissít
+def get_exchange_rates():
+    """
+    Letölti az aktuális árfolyamokat a frankfurter.app API-ból.
+    Visszaad egy dictionary-t: {'HUF': 1.0, 'EUR': ..., 'RSD': ...}
+    Hiba esetén a fix árfolyamokat használja.
+    """
+    try:
+        # Az EUR alapú árfolyamokat kérjük le
+        url = "https://api.frankfurter.app/latest?from=EUR&to=HUF,RSD"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        rates = data['rates']
+        
+        # Az API EUR/HUF és EUR/RSD értékeket ad
+        eur_huf = rates['HUF']
+        eur_rsd = rates['RSD']
+        
+        # Átszámítjuk HUF alapra
+        # 1 HUF = 1 / eur_huf EUR
+        # 1 EUR = eur_huf HUF
+        # 1 RSD = (1 / eur_rsd) EUR = (1 / eur_rsd) * eur_huf HUF
+        huf_per_eur = eur_huf
+        huf_per_rsd = eur_huf / eur_rsd
+        
+        return {
+            'HUF': 1.0,
+            'EUR': huf_per_eur,
+            'RSD': huf_per_rsd
+        }
+    except Exception as e:
+        # Ha bármi hiba van, használjuk a fix értékeket
+        # A st.warning csak akkor jelenik meg, ha a session_state engedi
+        if 'rates_warning_shown' not in st.session_state:
+            st.session_state.rates_warning_shown = False
+        if not st.session_state.rates_warning_shown:
+            st.warning(f"⚠️ Nem sikerült frissíteni az árfolyamokat. Az utolsó ismert értékeket használjuk. Hiba: {e}")
+            st.session_state.rates_warning_shown = True
+        return FALLBACK_RATES.copy()
 
 # ------------------------------
 # Google Sheets kapcsolat
@@ -143,7 +160,7 @@ def save_full_data(expenses, income, equipment):
     else:
         ws_eq.update([['name', 'purchase_date', 'cost', 'currency', 'status']])
 
-# Átváltás más pénznemre (mostantól az aktuális árfolyamokat használja)
+# Átváltás más pénznemre (az aktuális árfolyamokkal)
 def convert_currency(amount, from_currency, to_currency):
     rates = get_exchange_rates()
     amount_huf = amount * rates.get(from_currency, 1.0)
@@ -152,13 +169,6 @@ def convert_currency(amount, from_currency, to_currency):
 # Fő alkalmazás
 def main():
     st.title("🌱 Csíra Vállalkozás Pénzügyi Követő")
-    
-    # Árfolyamok előzetes betöltése és kiírása (informatív jelleggel)
-    rates = get_exchange_rates()
-    with st.sidebar:
-        st.caption(f"💱 Aktuális árfolyamok:")
-        st.caption(f"1 EUR = {rates['EUR']:.2f} Ft")
-        st.caption(f"100 RSD = {rates['RSD']*100:.2f} Ft")
     
     # Session state inicializálása
     if 'expenses' not in st.session_state:
@@ -169,10 +179,15 @@ def main():
         st.session_state.edit_income_index = None
     if 'edit_equipment_index' not in st.session_state:
         st.session_state.edit_equipment_index = None
+    if 'rates_warning_shown' not in st.session_state:
+        st.session_state.rates_warning_shown = False
     
     expenses = st.session_state.expenses
     income = st.session_state.income
     equipment = st.session_state.equipment
+    
+    # Árfolyamok lekérése (a figyelmeztetés itt jelenik meg, ha kell)
+    get_exchange_rates()
     
     menu = st.sidebar.selectbox(
         "Menü",
@@ -258,7 +273,6 @@ def show_overview(expenses, income, display_currency):
 def show_expenses(expenses):
     st.header("💰 Kiadások Kezelése")
     
-    # Szerkesztési állapot kezelése
     if st.session_state.edit_expense_index is not None:
         idx = st.session_state.edit_expense_index
         if idx < len(expenses):
@@ -280,7 +294,6 @@ def show_expenses(expenses):
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
                     if st.form_submit_button("💾 Módosítás mentése", use_container_width=True):
-                        # Adatok frissítése
                         expenses.at[idx, 'date'] = date.strftime('%Y-%m-%d')
                         expenses.at[idx, 'item'] = item
                         expenses.at[idx, 'amount'] = amount
@@ -296,7 +309,6 @@ def show_expenses(expenses):
                         st.session_state.edit_expense_index = None
                         st.rerun()
     
-    # Új kiadás hozzáadása
     with st.expander("➕ Új Kiadás Hozzáadása", expanded=(st.session_state.edit_expense_index is None)):
         col1, col2, col3, col4 = st.columns([2,2,2,2])
         with col1: date_new = st.date_input("Dátum", datetime.now(), key="new_exp_date")
@@ -316,7 +328,6 @@ def show_expenses(expenses):
             else:
                 st.error("❌ Kérlek tölts ki minden mezőt!")
     
-    # Meglévő kiadások listája
     if not expenses.empty:
         st.subheader("📋 Kiadások Listája")
         for i, (idx, row) in enumerate(expenses.iterrows()):
@@ -342,7 +353,6 @@ def show_expenses(expenses):
 def show_income(income):
     st.header("💵 Bevételek Kezelése")
     
-    # Szerkesztési állapot
     if st.session_state.edit_income_index is not None:
         idx = st.session_state.edit_income_index
         if idx < len(income):
@@ -375,7 +385,6 @@ def show_income(income):
                         st.session_state.edit_income_index = None
                         st.rerun()
     
-    # Új bevétel
     with st.expander("➕ Új Bevétel Hozzáadása", expanded=(st.session_state.edit_income_index is None)):
         col1, col2, col3, col4 = st.columns([2,2,2,2])
         with col1: date_new = st.date_input("Dátum", datetime.now(), key="new_inc_date")
@@ -393,7 +402,6 @@ def show_income(income):
             else:
                 st.error("❌ Kérlek tölts ki minden mezőt!")
     
-    # Lista
     if not income.empty:
         st.subheader("📋 Bevételek Listája")
         for i, (idx, row) in enumerate(income.iterrows()):
@@ -418,7 +426,6 @@ def show_income(income):
 def show_equipment(equipment, display_currency):
     st.header("🛠️ Eszközök Kezelése")
     
-    # Szerkesztés
     if st.session_state.edit_equipment_index is not None:
         idx = st.session_state.edit_equipment_index
         if idx < len(equipment):
@@ -453,7 +460,6 @@ def show_equipment(equipment, display_currency):
                         st.session_state.edit_equipment_index = None
                         st.rerun()
     
-    # Új eszköz
     with st.expander("➕ Új Eszköz Hozzáadása", expanded=(st.session_state.edit_equipment_index is None)):
         col1, col2, col3, col4 = st.columns([2,2,2,2])
         with col1: name_new = st.text_input("Eszköz neve", placeholder="pl. Csíráztató tálca", key="new_eq_name")
@@ -472,7 +478,6 @@ def show_equipment(equipment, display_currency):
             else:
                 st.error("❌ Kérlek tölts ki minden mezőt!")
     
-    # Lista
     if not equipment.empty:
         st.subheader("📋 Eszközök Listája")
         for i, (idx, row) in enumerate(equipment.iterrows()):
