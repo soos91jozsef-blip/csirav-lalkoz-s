@@ -92,58 +92,125 @@ def get_gsheet_client():
     return gspread.authorize(creds)
 
 def load_data():
-    """Adatok betöltése a Google Sheets-ből DataFrame-ekbe."""
-    client = get_gsheet_client()
-    sheet = client.open(SHEET_NAME)
-    
+    """
+    Adatok betöltése a Google Sheets-ből.
+    Ha betöltés sikertelen, a session_state-ben tárolt utolsó jó adatokat használjuk.
+    """
+    # Kezdőértékek, ha még semmi nincs
+    if 'last_good_expenses' not in st.session_state:
+        st.session_state.last_good_expenses = pd.DataFrame(columns=['date', 'item', 'amount', 'currency', 'category'])
+        st.session_state.last_good_income = pd.DataFrame(columns=['date', 'description', 'amount', 'currency'])
+        st.session_state.last_good_equipment = pd.DataFrame(columns=['name', 'purchase_date', 'cost', 'currency', 'status'])
+
     try:
-        ws_exp = sheet.worksheet(WORKSHEETS["expenses"])
-        data_exp = ws_exp.get_all_records()
-        expenses = pd.DataFrame(data_exp) if data_exp else pd.DataFrame(columns=['date', 'item', 'amount', 'currency', 'category'])
-    except:
-        expenses = pd.DataFrame(columns=['date', 'item', 'amount', 'currency', 'category'])
-    
-    try:
-        ws_inc = sheet.worksheet(WORKSHEETS["income"])
-        data_inc = ws_inc.get_all_records()
-        income = pd.DataFrame(data_inc) if data_inc else pd.DataFrame(columns=['date', 'description', 'amount', 'currency'])
-    except:
-        income = pd.DataFrame(columns=['date', 'description', 'amount', 'currency'])
-    
-    try:
-        ws_eq = sheet.worksheet(WORKSHEETS["equipment"])
-        data_eq = ws_eq.get_all_records()
-        equipment = pd.DataFrame(data_eq) if data_eq else pd.DataFrame(columns=['name', 'purchase_date', 'cost', 'currency', 'status'])
-    except:
-        equipment = pd.DataFrame(columns=['name', 'purchase_date', 'cost', 'currency', 'status'])
-    
-    return expenses, income, equipment
+        client = get_gsheet_client()
+        sheet = client.open(SHEET_NAME)
+        
+        # Kiadások
+        try:
+            ws_exp = sheet.worksheet(WORKSHEETS["expenses"])
+            data_exp = ws_exp.get_all_records()
+            expenses = pd.DataFrame(data_exp) if data_exp else pd.DataFrame(columns=['date', 'item', 'amount', 'currency', 'category'])
+            st.session_state.last_good_expenses = expenses.copy()
+        except:
+            expenses = st.session_state.last_good_expenses.copy()
+            st.warning("⚠️ A kiadások betöltése nem sikerült, a legutóbbi adatokat mutatjuk.")
+        
+        # Bevételek
+        try:
+            ws_inc = sheet.worksheet(WORKSHEETS["income"])
+            data_inc = ws_inc.get_all_records()
+            income = pd.DataFrame(data_inc) if data_inc else pd.DataFrame(columns=['date', 'description', 'amount', 'currency'])
+            st.session_state.last_good_income = income.copy()
+        except:
+            income = st.session_state.last_good_income.copy()
+            st.warning("⚠️ A bevételek betöltése nem sikerült, a legutóbbi adatokat mutatjuk.")
+        
+        # Eszközök
+        try:
+            ws_eq = sheet.worksheet(WORKSHEETS["equipment"])
+            data_eq = ws_eq.get_all_records()
+            equipment = pd.DataFrame(data_eq) if data_eq else pd.DataFrame(columns=['name', 'purchase_date', 'cost', 'currency', 'status'])
+            st.session_state.last_good_equipment = equipment.copy()
+        except:
+            equipment = st.session_state.last_good_equipment.copy()
+            st.warning("⚠️ Az eszközök betöltése nem sikerült, a legutóbbi adatokat mutatjuk.")
+        
+        return expenses, income, equipment
+    except Exception as e:
+        # Ha a teljes kapcsolódás meghiúsul, mindenhol a legutóbbi jó adatokat használjuk
+        st.error(f"❌ Nem sikerült kapcsolódni a Google Sheets-hez: {e}")
+        return (st.session_state.last_good_expenses.copy(),
+                st.session_state.last_good_income.copy(),
+                st.session_state.last_good_equipment.copy())
 
 def save_full_data(expenses, income, equipment):
-    """Teljes adatok mentése a Google Sheets-be (felülírás)."""
-    client = get_gsheet_client()
-    sheet = client.open(SHEET_NAME)
-    
-    ws_exp = sheet.worksheet(WORKSHEETS["expenses"])
-    ws_exp.clear()
-    if not expenses.empty:
-        ws_exp.update([expenses.columns.tolist()] + expenses.values.tolist())
-    else:
-        ws_exp.update([['date', 'item', 'amount', 'currency', 'category']])
-    
-    ws_inc = sheet.worksheet(WORKSHEETS["income"])
-    ws_inc.clear()
-    if not income.empty:
-        ws_inc.update([income.columns.tolist()] + income.values.tolist())
-    else:
-        ws_inc.update([['date', 'description', 'amount', 'currency']])
-    
-    ws_eq = sheet.worksheet(WORKSHEETS["equipment"])
-    ws_eq.clear()
-    if not equipment.empty:
-        ws_eq.update([equipment.columns.tolist()] + equipment.values.tolist())
-    else:
-        ws_eq.update([['name', 'purchase_date', 'cost', 'currency', 'status']])
+    """
+    Biztonságos mentés: nem írja felül a munkalapot, ha a dataframe véletlenül üres,
+    miközben a táblázatban vannak adatok.
+    """
+    try:
+        client = get_gsheet_client()
+        sheet = client.open(SHEET_NAME)
+    except Exception as e:
+        st.error(f"❌ Nem sikerült kapcsolódni a mentéshez: {e}")
+        return
+
+    # Segédfüggvény: megadja, hány sor van a munkalapon (fejléc nélkül)
+    def get_worksheet_row_count(ws):
+        # get_all_values hossza -1 (fejléc)
+        all_vals = ws.get_all_values()
+        return len(all_vals) - 1 if all_vals else 0
+
+    # Kiadások mentése
+    try:
+        ws_exp = sheet.worksheet(WORKSHEETS["expenses"])
+        current_rows = get_worksheet_row_count(ws_exp)
+        if not expenses.empty or current_rows == 0:
+            # Van adat, vagy a munkalap is üres – nyugodtan felülírhatjuk
+            ws_exp.clear()
+            if not expenses.empty:
+                ws_exp.update([expenses.columns.tolist()] + expenses.values.tolist())
+            else:
+                ws_exp.update([['date', 'item', 'amount', 'currency', 'category']])
+            st.session_state.last_good_expenses = expenses.copy()
+        else:
+            # A dataframe üres, de a munkalapon vannak adatok – nem bántjuk a régi adatokat!
+            st.warning("⚠️ A kiadások adatai üresek, a Google Sheets régi adatai megmaradtak.")
+    except Exception as e:
+        st.error(f"❌ Hiba a kiadások mentésekor: {e}")
+
+    # Bevételek mentése
+    try:
+        ws_inc = sheet.worksheet(WORKSHEETS["income"])
+        current_rows = get_worksheet_row_count(ws_inc)
+        if not income.empty or current_rows == 0:
+            ws_inc.clear()
+            if not income.empty:
+                ws_inc.update([income.columns.tolist()] + income.values.tolist())
+            else:
+                ws_inc.update([['date', 'description', 'amount', 'currency']])
+            st.session_state.last_good_income = income.copy()
+        else:
+            st.warning("⚠️ A bevételek adatai üresek, a Google Sheets régi adatai megmaradtak.")
+    except Exception as e:
+        st.error(f"❌ Hiba a bevételek mentésekor: {e}")
+
+    # Eszközök mentése
+    try:
+        ws_eq = sheet.worksheet(WORKSHEETS["equipment"])
+        current_rows = get_worksheet_row_count(ws_eq)
+        if not equipment.empty or current_rows == 0:
+            ws_eq.clear()
+            if not equipment.empty:
+                ws_eq.update([equipment.columns.tolist()] + equipment.values.tolist())
+            else:
+                ws_eq.update([['name', 'purchase_date', 'cost', 'currency', 'status']])
+            st.session_state.last_good_equipment = equipment.copy()
+        else:
+            st.warning("⚠️ Az eszközök adatai üresek, a Google Sheets régi adatai megmaradtak.")
+    except Exception as e:
+        st.error(f"❌ Hiba az eszközök mentésekor: {e}")
 
 def convert_currency(amount, from_currency, to_currency):
     rates = get_exchange_rates()
@@ -154,6 +221,7 @@ def convert_currency(amount, from_currency, to_currency):
 def main():
     st.title("🌱 Csíra Vállalkozás Pénzügyi Követő")
     
+    # Session state inicializálása (ha még nem létezik, load_data úgyis feltölti)
     if 'expenses' not in st.session_state:
         st.session_state.expenses, st.session_state.income, st.session_state.equipment = load_data()
     if 'edit_expense_index' not in st.session_state:
@@ -176,7 +244,7 @@ def main():
         ["📊 Áttekintés", "💰 Kiadások", "💵 Bevételek", "🛠️ Eszközök", "📈 Részletes Statisztika"]
     )
     
-    # Pénznem kiválasztása - minden menüpontra érvényes
+    # Pénznem kiválasztása
     st.sidebar.markdown("---")
     display_currency = st.sidebar.selectbox(
         "📌 Pénznem a végösszegekhez:",
@@ -328,7 +396,6 @@ def show_expenses(expenses, display_currency):
                 st.success("✅ Kiadás törölve!")
                 st.rerun()
         
-        # Végösszeg a kiválasztott pénznemben
         total_in_selected = sum(convert_currency(row['amount'], row['currency'], display_currency) for _, row in expenses.iterrows())
         st.info(f"📤 **Összes kiadás:** {total_in_selected:,.0f} {symbol}")
 
@@ -403,7 +470,6 @@ def show_income(income, display_currency):
                 st.success("✅ Bevétel törölve!")
                 st.rerun()
         
-        # Végösszeg a kiválasztott pénznemben
         total_in_selected = sum(convert_currency(row['amount'], row['currency'], display_currency) for _, row in income.iterrows())
         st.info(f"📥 **Összes bevétel:** {total_in_selected:,.0f} {symbol}")
 
