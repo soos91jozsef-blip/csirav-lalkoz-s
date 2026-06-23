@@ -7,6 +7,7 @@ import json
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import requests
+import time
 
 # ------------------------------
 # Google Sheets beállítások
@@ -18,21 +19,9 @@ WORKSHEETS = {
     "equipment": "Eszkozok"
 }
 
-# Oldal konfiguráció
-st.set_page_config(
-    page_title="Csíra Vállalkozás Követő",
-    page_icon="🌱",
-    layout="wide"
-)
+st.set_page_config(page_title="Csíra Vállalkozás Követő", page_icon="🌱", layout="wide")
 
-# Alapértelmezett fix árfolyamok (tartalék)
-FALLBACK_RATES = {
-    'HUF': 1.0,
-    'EUR': 380.0,
-    'RSD': 3.25,
-}
-
-# Pénznem szimbólumok és formátumok
+FALLBACK_RATES = {'HUF': 1.0, 'EUR': 380.0, 'RSD': 3.25}
 CURRENCY_INFO = {
     'HUF': {'symbol': 'Ft', 'name': 'Magyar Forint'},
     'EUR': {'symbol': '€', 'name': 'Euró'},
@@ -40,37 +29,24 @@ CURRENCY_INFO = {
 }
 
 # ------------------------------
-# Árfolyam frissítése API-ból
+# Árfolyamok
 # ------------------------------
 @st.cache_data(ttl=3600)
 def get_exchange_rates():
-    """
-    Letölti az aktuális árfolyamokat az open.er-api.com-ról.
-    Visszaadja: {'HUF': 1.0, 'EUR': ..., 'RSD': ...}
-    """
     try:
         url = "https://open.er-api.com/v6/latest/EUR"
         response = requests.get(url, timeout=10)
         response.raise_for_status()
         data = response.json()
         rates = data['rates']
-        
         eur_huf = rates['HUF']
         eur_rsd = rates['RSD']
-        
-        huf_per_eur = eur_huf
-        huf_per_rsd = eur_huf / eur_rsd
-        
-        return {
-            'HUF': 1.0,
-            'EUR': huf_per_eur,
-            'RSD': huf_per_rsd
-        }
+        return {'HUF': 1.0, 'EUR': eur_huf, 'RSD': eur_huf / eur_rsd}
     except Exception as e:
         if 'rates_warning_shown' not in st.session_state:
             st.session_state.rates_warning_shown = False
         if not st.session_state.rates_warning_shown:
-            st.warning(f"⚠️ Nem sikerült frissíteni az árfolyamokat. Az utolsó ismert értékeket használjuk. Hiba: {e}")
+            st.warning(f"⚠️ Nem sikerült frissíteni az árfolyamokat. Hiba: {e}")
             st.session_state.rates_warning_shown = True
         return FALLBACK_RATES.copy()
 
@@ -79,151 +55,122 @@ def get_exchange_rates():
 # ------------------------------
 @st.cache_resource
 def get_gsheet_client():
-    """Google Sheets kliens inicializálása."""
     try:
         creds_dict = json.loads(st.secrets["gcp_credentials"])
     except (KeyError, json.JSONDecodeError):
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
         return gspread.authorize(creds)
-    
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     return gspread.authorize(creds)
 
+# ------------------------------
+# Adatok betöltése (cache-elve)
+# ------------------------------
 def load_data():
-    """
-    Adatok betöltése a Google Sheets-ből.
-    Ha betöltés sikertelen, a session_state-ben tárolt utolsó jó adatokat használjuk.
-    """
-    # Kezdőértékek, ha még semmi nincs
-    if 'last_good_expenses' not in st.session_state:
-        st.session_state.last_good_expenses = pd.DataFrame(columns=['date', 'item', 'amount', 'currency', 'category'])
-        st.session_state.last_good_income = pd.DataFrame(columns=['date', 'description', 'amount', 'currency'])
-        st.session_state.last_good_equipment = pd.DataFrame(columns=['name', 'purchase_date', 'cost', 'currency', 'status'])
-
-    try:
-        client = get_gsheet_client()
-        sheet = client.open(SHEET_NAME)
-        
-        # Kiadások
+    if 'data_loaded' not in st.session_state:
+        st.session_state.data_loaded = False
+        st.session_state.expenses = pd.DataFrame(columns=['date', 'item', 'amount', 'currency', 'category'])
+        st.session_state.income = pd.DataFrame(columns=['date', 'description', 'amount', 'currency'])
+        st.session_state.equipment = pd.DataFrame(columns=['name', 'purchase_date', 'cost', 'currency', 'status'])
+    
+    if not st.session_state.data_loaded:
         try:
-            ws_exp = sheet.worksheet(WORKSHEETS["expenses"])
-            data_exp = ws_exp.get_all_records()
-            expenses = pd.DataFrame(data_exp) if data_exp else pd.DataFrame(columns=['date', 'item', 'amount', 'currency', 'category'])
-            st.session_state.last_good_expenses = expenses.copy()
-        except:
-            expenses = st.session_state.last_good_expenses.copy()
-            st.warning("⚠️ A kiadások betöltése nem sikerült, a legutóbbi adatokat mutatjuk.")
-        
-        # Bevételek
+            client = get_gsheet_client()
+            sheet = client.open(SHEET_NAME)
+            
+            try:
+                ws_exp = sheet.worksheet(WORKSHEETS["expenses"])
+                data_exp = ws_exp.get_all_records()
+                st.session_state.expenses = pd.DataFrame(data_exp) if data_exp else pd.DataFrame(columns=['date', 'item', 'amount', 'currency', 'category'])
+            except:
+                pass
+            
+            try:
+                ws_inc = sheet.worksheet(WORKSHEETS["income"])
+                data_inc = ws_inc.get_all_records()
+                st.session_state.income = pd.DataFrame(data_inc) if data_inc else pd.DataFrame(columns=['date', 'description', 'amount', 'currency'])
+            except:
+                pass
+            
+            try:
+                ws_eq = sheet.worksheet(WORKSHEETS["equipment"])
+                data_eq = ws_eq.get_all_records()
+                st.session_state.equipment = pd.DataFrame(data_eq) if data_eq else pd.DataFrame(columns=['name', 'purchase_date', 'cost', 'currency', 'status'])
+            except:
+                pass
+            
+            st.session_state.data_loaded = True
+        except Exception as e:
+            st.error(f"❌ Nem sikerült betölteni az adatokat: {e}")
+    
+    return st.session_state.expenses.copy(), st.session_state.income.copy(), st.session_state.equipment.copy()
+
+# ------------------------------
+# Biztonságos mentési függvények
+# ------------------------------
+def append_row_with_retry(worksheet_name, row_list, max_retries=3):
+    """Hozzáfűz egy sort a munkalaphoz, újrapróbálkozással."""
+    for attempt in range(max_retries):
         try:
-            ws_inc = sheet.worksheet(WORKSHEETS["income"])
-            data_inc = ws_inc.get_all_records()
-            income = pd.DataFrame(data_inc) if data_inc else pd.DataFrame(columns=['date', 'description', 'amount', 'currency'])
-            st.session_state.last_good_income = income.copy()
-        except:
-            income = st.session_state.last_good_income.copy()
-            st.warning("⚠️ A bevételek betöltése nem sikerült, a legutóbbi adatokat mutatjuk.")
-        
-        # Eszközök
+            client = get_gsheet_client()
+            sheet = client.open(SHEET_NAME)
+            ws = sheet.worksheet(worksheet_name)
+            ws.append_row(row_list)
+            return True, None
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(2)
+            else:
+                return False, str(e)
+    return False, "Ismeretlen hiba"
+
+def update_cell_with_retry(worksheet_name, row, col, value, max_retries=3):
+    """Egy cella frissítése újrapróbálkozással."""
+    for attempt in range(max_retries):
         try:
-            ws_eq = sheet.worksheet(WORKSHEETS["equipment"])
-            data_eq = ws_eq.get_all_records()
-            equipment = pd.DataFrame(data_eq) if data_eq else pd.DataFrame(columns=['name', 'purchase_date', 'cost', 'currency', 'status'])
-            st.session_state.last_good_equipment = equipment.copy()
-        except:
-            equipment = st.session_state.last_good_equipment.copy()
-            st.warning("⚠️ Az eszközök betöltése nem sikerült, a legutóbbi adatokat mutatjuk.")
-        
-        return expenses, income, equipment
-    except Exception as e:
-        # Ha a teljes kapcsolódás meghiúsul, mindenhol a legutóbbi jó adatokat használjuk
-        st.error(f"❌ Nem sikerült kapcsolódni a Google Sheets-hez: {e}")
-        return (st.session_state.last_good_expenses.copy(),
-                st.session_state.last_good_income.copy(),
-                st.session_state.last_good_equipment.copy())
-
-def save_full_data(expenses, income, equipment):
-    """
-    Biztonságos mentés: nem írja felül a munkalapot, ha a dataframe véletlenül üres,
-    miközben a táblázatban vannak adatok.
-    """
-    try:
-        client = get_gsheet_client()
-        sheet = client.open(SHEET_NAME)
-    except Exception as e:
-        st.error(f"❌ Nem sikerült kapcsolódni a mentéshez: {e}")
-        return
-
-    # Segédfüggvény: megadja, hány sor van a munkalapon (fejléc nélkül)
-    def get_worksheet_row_count(ws):
-        # get_all_values hossza -1 (fejléc)
-        all_vals = ws.get_all_values()
-        return len(all_vals) - 1 if all_vals else 0
-
-    # Kiadások mentése
-    try:
-        ws_exp = sheet.worksheet(WORKSHEETS["expenses"])
-        current_rows = get_worksheet_row_count(ws_exp)
-        if not expenses.empty or current_rows == 0:
-            # Van adat, vagy a munkalap is üres – nyugodtan felülírhatjuk
-            ws_exp.clear()
-            if not expenses.empty:
-                ws_exp.update([expenses.columns.tolist()] + expenses.values.tolist())
+            client = get_gsheet_client()
+            sheet = client.open(SHEET_NAME)
+            ws = sheet.worksheet(worksheet_name)
+            ws.update_cell(row, col, value)
+            return True, None
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(2)
             else:
-                ws_exp.update([['date', 'item', 'amount', 'currency', 'category']])
-            st.session_state.last_good_expenses = expenses.copy()
-        else:
-            # A dataframe üres, de a munkalapon vannak adatok – nem bántjuk a régi adatokat!
-            st.warning("⚠️ A kiadások adatai üresek, a Google Sheets régi adatai megmaradtak.")
-    except Exception as e:
-        st.error(f"❌ Hiba a kiadások mentésekor: {e}")
+                return False, str(e)
+    return False, "Ismeretlen hiba"
 
-    # Bevételek mentése
-    try:
-        ws_inc = sheet.worksheet(WORKSHEETS["income"])
-        current_rows = get_worksheet_row_count(ws_inc)
-        if not income.empty or current_rows == 0:
-            ws_inc.clear()
-            if not income.empty:
-                ws_inc.update([income.columns.tolist()] + income.values.tolist())
+def delete_row_with_retry(worksheet_name, row_index, max_retries=3):
+    """Egy sor törlése újrapróbálkozással."""
+    for attempt in range(max_retries):
+        try:
+            client = get_gsheet_client()
+            sheet = client.open(SHEET_NAME)
+            ws = sheet.worksheet(worksheet_name)
+            ws.delete_rows(row_index)
+            return True, None
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(2)
             else:
-                ws_inc.update([['date', 'description', 'amount', 'currency']])
-            st.session_state.last_good_income = income.copy()
-        else:
-            st.warning("⚠️ A bevételek adatai üresek, a Google Sheets régi adatai megmaradtak.")
-    except Exception as e:
-        st.error(f"❌ Hiba a bevételek mentésekor: {e}")
-
-    # Eszközök mentése
-    try:
-        ws_eq = sheet.worksheet(WORKSHEETS["equipment"])
-        current_rows = get_worksheet_row_count(ws_eq)
-        if not equipment.empty or current_rows == 0:
-            ws_eq.clear()
-            if not equipment.empty:
-                ws_eq.update([equipment.columns.tolist()] + equipment.values.tolist())
-            else:
-                ws_eq.update([['name', 'purchase_date', 'cost', 'currency', 'status']])
-            st.session_state.last_good_equipment = equipment.copy()
-        else:
-            st.warning("⚠️ Az eszközök adatai üresek, a Google Sheets régi adatai megmaradtak.")
-    except Exception as e:
-        st.error(f"❌ Hiba az eszközök mentésekor: {e}")
+                return False, str(e)
+    return False, "Ismeretlen hiba"
 
 def convert_currency(amount, from_currency, to_currency):
     rates = get_exchange_rates()
     amount_huf = amount * rates.get(from_currency, 1.0)
     return amount_huf / rates.get(to_currency, 1.0)
 
+# ------------------------------
 # Fő alkalmazás
+# ------------------------------
 def main():
     st.title("🌱 Csíra Vállalkozás Pénzügyi Követő")
     
-    # Session state inicializálása (ha még nem létezik, load_data úgyis feltölti)
-    if 'expenses' not in st.session_state:
-        st.session_state.expenses, st.session_state.income, st.session_state.equipment = load_data()
+    expenses, income, equipment = load_data()
+    
     if 'edit_expense_index' not in st.session_state:
         st.session_state.edit_expense_index = None
     if 'edit_income_index' not in st.session_state:
@@ -233,33 +180,23 @@ def main():
     if 'rates_warning_shown' not in st.session_state:
         st.session_state.rates_warning_shown = False
     
-    expenses = st.session_state.expenses
-    income = st.session_state.income
-    equipment = st.session_state.equipment
-    
     get_exchange_rates()
     
-    menu = st.sidebar.selectbox(
-        "Menü",
-        ["📊 Áttekintés", "💰 Kiadások", "💵 Bevételek", "🛠️ Eszközök", "📈 Részletes Statisztika"]
-    )
-    
-    # Pénznem kiválasztása
+    menu = st.sidebar.selectbox("Menü", ["📊 Áttekintés", "💰 Kiadások", "💵 Bevételek", "🛠️ Eszközök", "📈 Részletes Statisztika"])
     st.sidebar.markdown("---")
-    display_currency = st.sidebar.selectbox(
-        "📌 Pénznem a végösszegekhez:",
-        ['HUF', 'EUR', 'RSD'],
-        help="Válaszd ki, milyen pénznemben szeretnéd látni a végösszegeket"
-    )
+    display_currency = st.sidebar.selectbox("📌 Pénznem a végösszegekhez:", ['HUF', 'EUR', 'RSD'])
     
     if menu == "📊 Áttekintés":
         show_overview(expenses, income, display_currency)
     elif menu == "💰 Kiadások":
-        show_expenses(expenses, display_currency)
+        expenses = show_expenses(expenses, display_currency)
+        st.session_state.expenses = expenses
     elif menu == "💵 Bevételek":
-        show_income(income, display_currency)
+        income = show_income(income, display_currency)
+        st.session_state.income = income
     elif menu == "🛠️ Eszközök":
-        show_equipment(equipment, display_currency)
+        equipment = show_equipment(equipment, display_currency)
+        st.session_state.equipment = equipment
     elif menu == "📈 Részletes Statisztika":
         show_detailed_stats(expenses, income, display_currency)
 
@@ -271,24 +208,18 @@ def show_overview(expenses, income, display_currency):
     if not expenses.empty:
         for _, row in expenses.iterrows():
             total_expenses += convert_currency(row['amount'], row['currency'], display_currency)
-    
     total_income = 0
     if not income.empty:
         for _, row in income.iterrows():
             total_income += convert_currency(row['amount'], row['currency'], display_currency)
-    
     profit = total_income - total_expenses
     profit_margin = (profit / total_income * 100) if total_income > 0 else 0
     
     col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("📤 Összes Kiadás", f"{total_expenses:,.0f} {symbol}", delta_color="inverse")
-    with col2:
-        st.metric("📥 Összes Bevétel", f"{total_income:,.0f} {symbol}", delta_color="normal")
-    with col3:
-        st.metric("💰 Haszon", f"{profit:,.0f} {symbol}", delta=f"{profit_margin:.1f}%", delta_color="normal" if profit >= 0 else "inverse")
-    with col4:
-        st.metric("📈 Haszonkulcs", f"{profit_margin:.1f}%")
+    col1.metric("📤 Összes Kiadás", f"{total_expenses:,.0f} {symbol}", delta_color="inverse")
+    col2.metric("📥 Összes Bevétel", f"{total_income:,.0f} {symbol}", delta_color="normal")
+    col3.metric("💰 Haszon", f"{profit:,.0f} {symbol}", delta=f"{profit_margin:.1f}%", delta_color="normal" if profit >= 0 else "inverse")
+    col4.metric("📈 Haszonkulcs", f"{profit_margin:.1f}%")
     
     st.subheader("📊 Kiadás, Bevétel, Haszon Összehasonlítás")
     fig = go.Figure(data=[
@@ -343,16 +274,24 @@ def show_expenses(expenses, display_currency):
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
                     if st.form_submit_button("💾 Módosítás mentése", use_container_width=True):
-                        expenses.at[idx, 'date'] = date.strftime('%Y-%m-%d')
-                        expenses.at[idx, 'item'] = item
-                        expenses.at[idx, 'amount'] = amount
-                        expenses.at[idx, 'currency'] = currency
-                        expenses.at[idx, 'category'] = category
-                        st.session_state.expenses = expenses
-                        save_full_data(expenses, st.session_state.income, st.session_state.equipment)
-                        st.session_state.edit_expense_index = None
-                        st.success("✅ Kiadás módosítva!")
-                        st.rerun()
+                        row_num = idx + 2
+                        s1, _ = update_cell_with_retry(WORKSHEETS["expenses"], row_num, 1, date.strftime('%Y-%m-%d'))
+                        s2, _ = update_cell_with_retry(WORKSHEETS["expenses"], row_num, 2, item)
+                        s3, _ = update_cell_with_retry(WORKSHEETS["expenses"], row_num, 3, amount)
+                        s4, _ = update_cell_with_retry(WORKSHEETS["expenses"], row_num, 4, currency)
+                        s5, _ = update_cell_with_retry(WORKSHEETS["expenses"], row_num, 5, category)
+                        if all([s1, s2, s3, s4, s5]):
+                            expenses.at[idx, 'date'] = date.strftime('%Y-%m-%d')
+                            expenses.at[idx, 'item'] = item
+                            expenses.at[idx, 'amount'] = amount
+                            expenses.at[idx, 'currency'] = currency
+                            expenses.at[idx, 'category'] = category
+                            st.session_state.expenses = expenses
+                            st.session_state.edit_expense_index = None
+                            st.success("✅ Kiadás módosítva!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Hiba a mentés során!")
                 with col_btn2:
                     if st.form_submit_button("❌ Mégsem", use_container_width=True):
                         st.session_state.edit_expense_index = None
@@ -368,12 +307,17 @@ def show_expenses(expenses, display_currency):
             ["Anyagköltség", "Eszközök", "Szállítás", "Csomagolás", "Marketing", "Egyéb"], key="new_exp_category")
         if st.button("💾 Kiadás Mentése", type="primary", use_container_width=True, key="save_new_expense"):
             if item_new and amount_new > 0:
-                new_row = pd.DataFrame({'date': [date_new.strftime('%Y-%m-%d')], 'item': [item_new], 'amount': [amount_new], 'currency': [currency_new], 'category': [category_new]})
-                expenses = pd.concat([expenses, new_row], ignore_index=True)
-                st.session_state.expenses = expenses
-                save_full_data(expenses, st.session_state.income, st.session_state.equipment)
-                st.success(f"✅ Kiadás mentve: {item_new} - {amount_new:,.0f} {CURRENCY_INFO[currency_new]['symbol']}")
-                st.rerun()
+                new_row_list = [date_new.strftime('%Y-%m-%d'), item_new, amount_new, currency_new, category_new]
+                success, err = append_row_with_retry(WORKSHEETS["expenses"], new_row_list)
+                if success:
+                    new_row = pd.DataFrame({'date': [new_row_list[0]], 'item': [new_row_list[1]], 'amount': [new_row_list[2]], 'currency': [new_row_list[3]], 'category': [new_row_list[4]]})
+                    expenses = pd.concat([expenses, new_row], ignore_index=True)
+                    st.session_state.expenses = expenses
+                    st.session_state.data_loaded = False
+                    st.success(f"✅ Kiadás mentve: {item_new} - {amount_new:,.0f} {CURRENCY_INFO[currency_new]['symbol']}")
+                    st.rerun()
+                else:
+                    st.error(f"❌ Hiba a mentés során: {err}")
             else:
                 st.error("❌ Kérlek tölts ki minden mezőt!")
     
@@ -390,14 +334,21 @@ def show_expenses(expenses, display_currency):
                 st.session_state.edit_expense_index = i
                 st.rerun()
             if cols[6].button("🗑️", key=f"del_exp_{i}"):
-                expenses = expenses.drop(idx).reset_index(drop=True)
-                st.session_state.expenses = expenses
-                save_full_data(expenses, st.session_state.income, st.session_state.equipment)
-                st.success("✅ Kiadás törölve!")
-                st.rerun()
+                row_num = idx + 2
+                success, err = delete_row_with_retry(WORKSHEETS["expenses"], row_num)
+                if success:
+                    expenses = expenses.drop(idx).reset_index(drop=True)
+                    st.session_state.expenses = expenses
+                    st.session_state.data_loaded = False
+                    st.success("✅ Kiadás törölve!")
+                    st.rerun()
+                else:
+                    st.error(f"❌ Hiba a törlés során: {err}")
         
         total_in_selected = sum(convert_currency(row['amount'], row['currency'], display_currency) for _, row in expenses.iterrows())
         st.info(f"📤 **Összes kiadás:** {total_in_selected:,.0f} {symbol}")
+    
+    return expenses
 
 def show_income(income, display_currency):
     st.header("💵 Bevételek Kezelése")
@@ -421,15 +372,22 @@ def show_income(income, display_currency):
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
                     if st.form_submit_button("💾 Módosítás mentése", use_container_width=True):
-                        income.at[idx, 'date'] = date.strftime('%Y-%m-%d')
-                        income.at[idx, 'description'] = desc
-                        income.at[idx, 'amount'] = amount
-                        income.at[idx, 'currency'] = currency
-                        st.session_state.income = income
-                        save_full_data(st.session_state.expenses, income, st.session_state.equipment)
-                        st.session_state.edit_income_index = None
-                        st.success("✅ Bevétel módosítva!")
-                        st.rerun()
+                        row_num = idx + 2
+                        s1, _ = update_cell_with_retry(WORKSHEETS["income"], row_num, 1, date.strftime('%Y-%m-%d'))
+                        s2, _ = update_cell_with_retry(WORKSHEETS["income"], row_num, 2, desc)
+                        s3, _ = update_cell_with_retry(WORKSHEETS["income"], row_num, 3, amount)
+                        s4, _ = update_cell_with_retry(WORKSHEETS["income"], row_num, 4, currency)
+                        if all([s1, s2, s3, s4]):
+                            income.at[idx, 'date'] = date.strftime('%Y-%m-%d')
+                            income.at[idx, 'description'] = desc
+                            income.at[idx, 'amount'] = amount
+                            income.at[idx, 'currency'] = currency
+                            st.session_state.income = income
+                            st.session_state.edit_income_index = None
+                            st.success("✅ Bevétel módosítva!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Hiba a mentés során!")
                 with col_btn2:
                     if st.form_submit_button("❌ Mégsem", use_container_width=True):
                         st.session_state.edit_income_index = None
@@ -443,12 +401,17 @@ def show_income(income, display_currency):
         with col4: currency_new = st.selectbox("Pénznem", ['HUF', 'EUR', 'RSD'], key="new_inc_currency")
         if st.button("💾 Bevétel Mentése", type="primary", use_container_width=True, key="save_new_income"):
             if desc_new and amount_new > 0:
-                new_row = pd.DataFrame({'date': [date_new.strftime('%Y-%m-%d')], 'description': [desc_new], 'amount': [amount_new], 'currency': [currency_new]})
-                income = pd.concat([income, new_row], ignore_index=True)
-                st.session_state.income = income
-                save_full_data(st.session_state.expenses, income, st.session_state.equipment)
-                st.success(f"✅ Bevétel mentve: {desc_new} - {amount_new:,.0f} {CURRENCY_INFO[currency_new]['symbol']}")
-                st.rerun()
+                new_row_list = [date_new.strftime('%Y-%m-%d'), desc_new, amount_new, currency_new]
+                success, err = append_row_with_retry(WORKSHEETS["income"], new_row_list)
+                if success:
+                    new_row = pd.DataFrame({'date': [new_row_list[0]], 'description': [new_row_list[1]], 'amount': [new_row_list[2]], 'currency': [new_row_list[3]]})
+                    income = pd.concat([income, new_row], ignore_index=True)
+                    st.session_state.income = income
+                    st.session_state.data_loaded = False
+                    st.success(f"✅ Bevétel mentve: {desc_new} - {amount_new:,.0f} {CURRENCY_INFO[currency_new]['symbol']}")
+                    st.rerun()
+                else:
+                    st.error(f"❌ Hiba a mentés során: {err}")
             else:
                 st.error("❌ Kérlek tölts ki minden mezőt!")
     
@@ -464,14 +427,21 @@ def show_income(income, display_currency):
                 st.session_state.edit_income_index = i
                 st.rerun()
             if cols[5].button("🗑️", key=f"del_inc_{i}"):
-                income = income.drop(idx).reset_index(drop=True)
-                st.session_state.income = income
-                save_full_data(st.session_state.expenses, income, st.session_state.equipment)
-                st.success("✅ Bevétel törölve!")
-                st.rerun()
+                row_num = idx + 2
+                success, err = delete_row_with_retry(WORKSHEETS["income"], row_num)
+                if success:
+                    income = income.drop(idx).reset_index(drop=True)
+                    st.session_state.income = income
+                    st.session_state.data_loaded = False
+                    st.success("✅ Bevétel törölve!")
+                    st.rerun()
+                else:
+                    st.error(f"❌ Hiba a törlés során: {err}")
         
         total_in_selected = sum(convert_currency(row['amount'], row['currency'], display_currency) for _, row in income.iterrows())
         st.info(f"📥 **Összes bevétel:** {total_in_selected:,.0f} {symbol}")
+    
+    return income
 
 def show_equipment(equipment, display_currency):
     st.header("🛠️ Eszközök Kezelése")
@@ -496,16 +466,24 @@ def show_equipment(equipment, display_currency):
                 col_btn1, col_btn2 = st.columns(2)
                 with col_btn1:
                     if st.form_submit_button("💾 Módosítás mentése", use_container_width=True):
-                        equipment.at[idx, 'name'] = name
-                        equipment.at[idx, 'purchase_date'] = purch_date.strftime('%Y-%m-%d')
-                        equipment.at[idx, 'cost'] = cost
-                        equipment.at[idx, 'currency'] = currency
-                        equipment.at[idx, 'status'] = status
-                        st.session_state.equipment = equipment
-                        save_full_data(st.session_state.expenses, st.session_state.income, equipment)
-                        st.session_state.edit_equipment_index = None
-                        st.success("✅ Eszköz módosítva!")
-                        st.rerun()
+                        row_num = idx + 2
+                        s1, _ = update_cell_with_retry(WORKSHEETS["equipment"], row_num, 1, name)
+                        s2, _ = update_cell_with_retry(WORKSHEETS["equipment"], row_num, 2, purch_date.strftime('%Y-%m-%d'))
+                        s3, _ = update_cell_with_retry(WORKSHEETS["equipment"], row_num, 3, cost)
+                        s4, _ = update_cell_with_retry(WORKSHEETS["equipment"], row_num, 4, currency)
+                        s5, _ = update_cell_with_retry(WORKSHEETS["equipment"], row_num, 5, status)
+                        if all([s1, s2, s3, s4, s5]):
+                            equipment.at[idx, 'name'] = name
+                            equipment.at[idx, 'purchase_date'] = purch_date.strftime('%Y-%m-%d')
+                            equipment.at[idx, 'cost'] = cost
+                            equipment.at[idx, 'currency'] = currency
+                            equipment.at[idx, 'status'] = status
+                            st.session_state.equipment = equipment
+                            st.session_state.edit_equipment_index = None
+                            st.success("✅ Eszköz módosítva!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Hiba a mentés során!")
                 with col_btn2:
                     if st.form_submit_button("❌ Mégsem", use_container_width=True):
                         st.session_state.edit_equipment_index = None
@@ -520,12 +498,17 @@ def show_equipment(equipment, display_currency):
         status_new = st.selectbox("Állapot", ["Aktív", "Javítás alatt", "Selejtezve"], key="new_eq_status")
         if st.button("💾 Eszköz Mentése", type="primary", use_container_width=True, key="save_new_equipment"):
             if name_new and cost_new > 0:
-                new_row = pd.DataFrame({'name': [name_new], 'purchase_date': [purch_date_new.strftime('%Y-%m-%d')], 'cost': [cost_new], 'currency': [currency_new], 'status': [status_new]})
-                equipment = pd.concat([equipment, new_row], ignore_index=True)
-                st.session_state.equipment = equipment
-                save_full_data(st.session_state.expenses, st.session_state.income, equipment)
-                st.success(f"✅ Eszköz mentve: {name_new} - {cost_new:,.0f} {CURRENCY_INFO[currency_new]['symbol']}")
-                st.rerun()
+                new_row_list = [name_new, purch_date_new.strftime('%Y-%m-%d'), cost_new, currency_new, status_new]
+                success, err = append_row_with_retry(WORKSHEETS["equipment"], new_row_list)
+                if success:
+                    new_row = pd.DataFrame({'name': [new_row_list[0]], 'purchase_date': [new_row_list[1]], 'cost': [new_row_list[2]], 'currency': [new_row_list[3]], 'status': [new_row_list[4]]})
+                    equipment = pd.concat([equipment, new_row], ignore_index=True)
+                    st.session_state.equipment = equipment
+                    st.session_state.data_loaded = False
+                    st.success(f"✅ Eszköz mentve: {name_new} - {cost_new:,.0f} {CURRENCY_INFO[currency_new]['symbol']}")
+                    st.rerun()
+                else:
+                    st.error(f"❌ Hiba a mentés során: {err}")
             else:
                 st.error("❌ Kérlek tölts ki minden mezőt!")
     
@@ -542,11 +525,18 @@ def show_equipment(equipment, display_currency):
                 st.session_state.edit_equipment_index = i
                 st.rerun()
             if cols[6].button("🗑️", key=f"del_eq_{i}"):
-                equipment = equipment.drop(idx).reset_index(drop=True)
-                st.session_state.equipment = equipment
-                save_full_data(st.session_state.expenses, st.session_state.income, equipment)
-                st.success("✅ Eszköz törölve!")
-                st.rerun()
+                row_num = idx + 2
+                success, err = delete_row_with_retry(WORKSHEETS["equipment"], row_num)
+                if success:
+                    equipment = equipment.drop(idx).reset_index(drop=True)
+                    st.session_state.equipment = equipment
+                    st.session_state.data_loaded = False
+                    st.success("✅ Eszköz törölve!")
+                    st.rerun()
+                else:
+                    st.error(f"❌ Hiba a törlés során: {err}")
+    
+    return equipment
 
 def show_detailed_stats(expenses, income, display_currency):
     st.header("📈 Részletes Statisztika")
